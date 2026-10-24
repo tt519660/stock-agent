@@ -40,16 +40,13 @@ def reset_conversation():
     _conversation_history = None
 
 
+# ── LLM 客户端 ────────────────────────────────────────────────────────────────
+# 切换规则同 react_manual.py：AGENT_API_KEY / AGENT_BASE_URL / AGENT_MODEL
 client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+    base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 )
-MODEL = os.getenv("AGENT_MODEL", "qwen3.8-max")
-# client = OpenAI(
-#     api_key=os.getenv("DEEPSEEK_API_KEY"),
-#     base_url="https://api.deepseek.com",
-# )
-# MODEL = os.getenv("AGENT_MODEL", "deepseek-v4-flash")
+MODEL = os.getenv("AGENT_MODEL", "qwen-max")
 
 FC_SYSTEM_PROMPT = """你是一个专业的A股金融分析助手。
 规则：

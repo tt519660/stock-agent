@@ -70,10 +70,13 @@ def _with_retry(times: int = 3):
 BASE_DIR = Path(__file__).parent.parent
 VECTORSTORE_DIR = BASE_DIR / "vectorstore"
 
-# ── DashScope Embedding 客户端（与建索引时相同的模型）──────────────────────────
+# ── Embedding 客户端（与建索引时相同的模型）────────────────────────────────────
 _embed_client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+    base_url=os.getenv(
+        "AGENT_EMBEDDING_BASE_URL",
+        os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    ),
 )
 EMBED_MODEL = "text-embedding-v3"
 

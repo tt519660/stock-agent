@@ -42,16 +42,15 @@ def reset_conversation():
 
 
 # ── LLM 客户端 ────────────────────────────────────────────────────────────────
+# 默认 DashScope；通过环境变量切换：
+#   AGENT_API_KEY / AGENT_BASE_URL / AGENT_MODEL
+# 例如切 DeepSeek 官方接口：
+#   AGENT_API_KEY="sk-xxx"  AGENT_BASE_URL="https://api.deepseek.com/v1"  AGENT_MODEL="deepseek-chat"
 client = OpenAI(
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+    base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 )
-MODEL = os.getenv("AGENT_MODEL", "qwen3.8-max")
-# client = OpenAI(
-#     api_key=os.getenv("DEEPSEEK_API_KEY"),
-#     base_url="https://api.deepseek.com",
-# )
-# MODEL = os.getenv("AGENT_MODEL", "deepseek-v4-flash")
+MODEL = os.getenv("AGENT_MODEL", "qwen-max")
 
 
 # ── System Prompt ─────────────────────────────────────────────────────────────

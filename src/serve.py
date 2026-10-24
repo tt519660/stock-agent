@@ -62,6 +62,22 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _friendly_llm_error(e: Exception) -> str:
+    """把 OpenAI/DashScope 常见报错翻译为用户能看懂的话"""
+    text = str(e)
+    if "Arrearage" in text:
+        return "DashScope（阿里云百炼）账户欠费，LLM 无法调用。请到百炼控制台充值，或通过 AGENT_BASE_URL/AGENT_API_KEY 环境变量切换到其他服务商（如 DeepSeek）。"
+    if "Access denied" in text or "InvalidApiKey" in text:
+        return "API Key 无效或被拒绝访问，请检查 DASHSCOPE_API_KEY（或 AGENT_API_KEY）是否正确、账户状态是否正常。"
+    if "Throttling" in text or "RateLimit" in text:
+        return "请求被限流（调用过快或同时并发过高），请稍后再试。"
+    if "insufficient" in text.lower() and "quota" in text.lower():
+        return "调用配额耗尽，请前往对应模型平台检查额度。"
+    if "timed out" in text.lower() or "connection" in text.lower():
+        return "连接 LLM 服务超时，请检查网络或代理后重试。"
+    return text[:300]
+
+
 async def _stream_react(question: str, max_steps: int, mode: str,
                          session_id: str | None = None):
     """
@@ -99,6 +115,13 @@ async def _stream_react(question: str, max_steps: int, mode: str,
             for step_data in react_run(question, max_steps=max_steps,
                                        reset=reset, history=history):
                 item_queue.put_nowait(step_data)
+        except Exception as e:
+            # LLM 调用等异常（欠费/网络/限流）不能让 SSE 静默挂掉，转为 error 事件
+            logger.exception("ReAct 执行异常")
+            item_queue.put_nowait({
+                "type": "error",
+                "answer": f"Agent 执行失败: {_friendly_llm_error(e)}",
+            })
         finally:
             item_queue.put_nowait(_SENTINEL)
 
