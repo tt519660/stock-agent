@@ -50,7 +50,7 @@ client = OpenAI(
     api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
     base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 )
-MODEL = os.getenv("AGENT_MODEL", "qwen-max")
+MODEL = os.getenv("AGENT_MODEL", "qwen3.8-max")
 
 
 # ── System Prompt ─────────────────────────────────────────────────────────────

@@ -87,14 +87,14 @@ pip install -r requirements.txt
 
 ```bash
 export DASHSCOPE_API_KEY="sk-xxx"       # 必填，用于 LLM 推理和 RAG Embedding
-export AGENT_MODEL="qwen-max"           # 可选，默认 qwen-max，可换 deepseek-v3 等
+export AGENT_MODEL="qwen3.8-max"        # 可选，默认 qwen3.8-max，可换 deepseek-v3 等
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:DASHSCOPE_API_KEY = "sk-xxx"
-$env:AGENT_MODEL = "qwen-max"
+$env:AGENT_MODEL = "qwen3.8-max"
 ```
 
 切换到其他服务商（如 DeepSeek 官方接口）：

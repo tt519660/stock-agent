@@ -154,7 +154,7 @@ async def _stream_react(question: str, max_steps: int, mode: str,
             md = build_report_md(
                 question=question,
                 mode=mode,
-                model=os.getenv("AGENT_MODEL", "qwen-max"),
+                model=os.getenv("AGENT_MODEL", "qwen3.8-max"),
                 final_answer=final_answer,
                 steps=steps,
                 elapsed_s=elapsed,
@@ -191,7 +191,7 @@ async def query_fc(req: QueryRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": os.getenv("AGENT_MODEL", "qwen-max")}
+    return {"status": "ok", "model": os.getenv("AGENT_MODEL", "qwen3.8-max")}
 
 
 # ── 研报下载接口 ──────────────────────────────────────────────────────────────

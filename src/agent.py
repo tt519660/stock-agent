@@ -10,7 +10,7 @@
 
 环境变量：
   DASHSCOPE_API_KEY  必填
-  AGENT_MODEL        默认 qwen-max，可换 deepseek-v3 等
+  AGENT_MODEL        默认 qwen3.8-max，可换 deepseek-v3 等
 """
 
 import os
@@ -42,7 +42,7 @@ if __name__ == "__main__":
             from react_function_calling import chat
         chat(max_steps=args.max_steps)
     elif args.save_report:
-        model = os.getenv("AGENT_MODEL", "qwen-max")
+        model = os.getenv("AGENT_MODEL", "qwen3.8-max")
         if args.mode == "manual":
             from react_manual import run
         else:
