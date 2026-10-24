@@ -97,6 +97,16 @@ $env:DASHSCOPE_API_KEY = "sk-xxx"
 $env:AGENT_MODEL = "qwen-max"
 ```
 
+切换到其他服务商（如 DeepSeek 官方接口）：
+
+```powershell
+$env:AGENT_API_KEY  = "sk-xxx"                     # 对应服务商的 API Key
+$env:AGENT_BASE_URL = "https://api.deepseek.com/v1" # 服务商的 OpenAI 兼容地址
+$env:AGENT_MODEL    = "deepseek-chat"
+```
+
+> 已知错误码 `Arrearage`（400）表示 DashScope 账户欠费，服务端会以友好文案提示到 Web UI；充值后即可恢复。
+
 ### 3. 命令行运行
 
 ```bash
