@@ -1,0 +1,195 @@
+[
+  {
+    "id": "Q1",
+    "question": "贵州茅台和五粮液2023年的毛利率哪家更高？差多少个百分点？",
+    "expected_tools": [
+      "rag_search",
+      "rag_search",
+      "calculator"
+    ],
+    "note": "跨公司对比 + 计算",
+    "mode": "manual",
+    "total_steps": 5,
+    "elapsed_s": 16.6,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "company_lookup",
+      "financial_indicator",
+      "financial_indicator",
+      "calculator"
+    ],
+    "final_answer": "2023年贵州茅台的毛利率为91.96%，五粮液的毛利率为75.79%。两者之间的差距是16.17个百分点。根据AkShare提供的实时财务数据，可以得出此结论。"
+  },
+  {
+    "id": "Q1",
+    "question": "贵州茅台和五粮液2023年的毛利率哪家更高？差多少个百分点？",
+    "expected_tools": [
+      "rag_search",
+      "rag_search",
+      "calculator"
+    ],
+    "note": "跨公司对比 + 计算",
+    "mode": "fc",
+    "total_steps": 5,
+    "elapsed_s": 12.3,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "company_lookup",
+      "financial_indicator",
+      "financial_indicator",
+      "calculator"
+    ],
+    "final_answer": "贵州茅台2023年的毛利率比五粮液高16.17个百分点。\n\n- 贵州茅台2023年毛利率：91.96%\n- 五粮液2023年毛利率：75.79%\n- 毛利率差值：16.17个百分点\n\n以上数据来源于financial_indicator工具提供的两家公司财务指标信息。"
+  },
+  {
+    "id": "Q2",
+    "question": "宁德时代2021年到2023年的营业收入分别是多少？复合增长率是多少？",
+    "expected_tools": [
+      "rag_search",
+      "rag_search",
+      "rag_search",
+      "calculator"
+    ],
+    "note": "跨年度趋势 + CAGR计算",
+    "mode": "manual",
+    "total_steps": 4,
+    "elapsed_s": 26.8,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "rag_search",
+      "rag_search",
+      "rag_search"
+    ],
+    "final_answer": "通过现有工具和方法，我没有直接找到宁德时代2021年至2023年的具体营业收入数据。这类关键财务指标通常会出现在公司发布的年报中“合并利润表”部分。因此，建议您直接访问宁德时代的官方网站或通过证券交易所等渠道获取其正式发布的2021-2023年年报，从中可以查到每年的确切营业收入值。一旦获得了这三年的具体收入数字，复合增长率可以通过计算器功能计算得出。请参照官方公布的年报数据以确保准确性。"
+  },
+  {
+    "id": "Q2",
+    "question": "宁德时代2021年到2023年的营业收入分别是多少？复合增长率是多少？",
+    "expected_tools": [
+      "rag_search",
+      "rag_search",
+      "rag_search",
+      "calculator"
+    ],
+    "note": "跨年度趋势 + CAGR计算",
+    "mode": "fc",
+    "total_steps": 3,
+    "elapsed_s": 14.3,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "financial_indicator",
+      "calculator"
+    ],
+    "final_answer": "宁德时代从2023年到2025年的营业收入复合增长率（CAGR）大约为2.80%。\n\n请注意，这个计算是基于提供的数据，即2023年的4.009e+11元和2025年的4.237e+11元。如果需要2021年至2023年的具体数值和复合增长率，请提供相应的财务数据或允许我查找正确的数据。数据来源：financial_indicator 工具提供的宁德时代财务指标。"
+  },
+  {
+    "id": "Q3",
+    "question": "海康威视2023年年报中提到了哪些主要风险因素？",
+    "expected_tools": [
+      "rag_search"
+    ],
+    "note": "单次检索，定性问题",
+    "mode": "manual",
+    "total_steps": 3,
+    "elapsed_s": 22.6,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "rag_search",
+      "rag_search"
+    ],
+    "final_answer": "根据一般企业的年度报告结构，海康威视在2023年的年报中可能会提及以下几类主要风险因素：\n- 市场竞争加剧：随着行业内外竞争对手的增加和技术进步速度加快，公司面临市场份额被侵蚀的风险。\n- 技术更新换代：安防技术领域快速发展，若不能及时跟进最新科技趋势，则可能导致产品落后于市场需求。\n- 国际贸易环境变化：鉴于其全球业务布局，国际贸易政策调整、关税变动等都可能影响公司的海外销售业绩。\n- 宏观经济"
+  },
+  {
+    "id": "Q3",
+    "question": "海康威视2023年年报中提到了哪些主要风险因素？",
+    "expected_tools": [
+      "rag_search"
+    ],
+    "note": "单次检索，定性问题",
+    "mode": "fc",
+    "total_steps": 1,
+    "elapsed_s": 12.3,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "rag_search"
+    ],
+    "final_answer": "根据海康威视2023年年报，公司面临的主要风险因素包括：\n\n- **宏观经济波动**：全球宏观经济的不确定性增加，地缘政治复杂化，以及欧美制裁打压升级，给企业经营带来了巨大挑战。\n- **市场需求变化**：面对社会需求的变化，特别是从安防转向智能物联的需求转变，如果不能有效应对，可能会对公司业务产生负面影响。\n- **战略转型压力**：公司在进行业务转型过程中遇到困难，如将业务定位从安防转向智能物"
+  },
+  {
+    "id": "Q4",
+    "question": "贵州茅台过去一年（2023年全年）的股价涨跌幅是多少？",
+    "expected_tools": [
+      "company_lookup",
+      "stock_price",
+      "calculator"
+    ],
+    "note": "股价查询 + 计算",
+    "mode": "manual",
+    "total_steps": 2,
+    "elapsed_s": 16.1,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "stock_price"
+    ],
+    "final_answer": "贵州茅台（股票代码：600519）在过去一年（2023年全年）的股价涨跌幅为+2.64%，该数据来源于AkShare提供的历史股价信息。"
+  },
+  {
+    "id": "Q4",
+    "question": "贵州茅台过去一年（2023年全年）的股价涨跌幅是多少？",
+    "expected_tools": [
+      "company_lookup",
+      "stock_price",
+      "calculator"
+    ],
+    "note": "股价查询 + 计算",
+    "mode": "fc",
+    "total_steps": 2,
+    "elapsed_s": 5.6,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [
+      "company_lookup",
+      "stock_price"
+    ],
+    "final_answer": "已经找到了贵州茅台的股票代码为600519，但在尝试获取其2023年全年的股价信息时遇到了连接问题。这可能是暂时的网络或服务端问题。您可以稍后再试或者检查网络连接。如果问题持续存在，请联系客服寻求帮助。"
+  },
+  {
+    "id": "Q5",
+    "question": "请预测明年A股市场的走势",
+    "expected_tools": [],
+    "note": "超出能力边界，应拒绝作答",
+    "mode": "manual",
+    "total_steps": 0,
+    "elapsed_s": 7.8,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [],
+    "final_answer": "对于A股市场明年的具体走势预测，这需要综合考量宏观经济形势、国家政策变化、行业发展前景以及国际局势等诸多因素的影响，而这些分析超出了当前可用工具的支持范围。建议关注官方发布的经济报告、证券分析师的专业意见以及持续跟踪市场动态来形成自己的判断。对于投资决策，请务必谨慎并结合个人实际情况考虑。"
+  },
+  {
+    "id": "Q5",
+    "question": "请预测明年A股市场的走势",
+    "expected_tools": [],
+    "note": "超出能力边界，应拒绝作答",
+    "mode": "fc",
+    "total_steps": 0,
+    "elapsed_s": 10.2,
+    "success": true,
+    "parse_errors": 0,
+    "tools_used": [],
+    "final_answer": "预测A股市场未来的走势是一个复杂的过程，它受到多种因素的影响，包括但不限于宏观经济环境、政策调控、行业发展趋势、国际形势以及投资者情绪等。由于我所拥有的工具主要提供历史数据和财务信息，并不能直接用于预测市场未来表现，因此无法给出具体的预测。\n\n然而，投资者通常会参考以下几点来做出自己的判断：\n- **宏观经济指标**：如GDP增长率、通货膨胀率、就业数据等。\n- **政策变化**：政府的财政政策、"
+  }
+]
