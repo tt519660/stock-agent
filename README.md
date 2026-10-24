@@ -1,6 +1,6 @@
 # stock-agent
 
-以 A 股金融分析为场景的 **ReAct（Reasoning + Acting）Agent** 项目，基于 LLM 实现 Thought → Action → Observation 循环，逐步调用工具完成财务对比、年报检索、股价分析等任务。
+以 A 股金融分析为场景的 **ReAct（Reasoning + Acting）Agent** 项目，基于 LLM 实现 Thought → Action → Observation 循环，逐步调用工具完成财务对比、年报检索、股价分析、技术面判断、舆情追踪、行业横向对比等任务。
 
 提供两种工程实现，可直接对比学习：
 
@@ -12,15 +12,20 @@
 ## 功能特性
 
 - ReAct 循环驱动（默认最多 10 步），支持 CLI 与 Web UI（SSE 流式展示每步推理）
-- 5 个异构工具：
+- **8 个异构工具**：
   | 工具 | 数据来源 | 用途 |
   |------|---------|------|
   | `company_lookup` | 静态字典 | 公司名 → 股票代码，防幻觉 |
   | `rag_search` | FAISS + DashScope Embedding | 年报原文语义检索（5 家公司 2021–2023 年报，10353 条向量） |
   | `financial_indicator` | AkShare | 近 3 年结构化财务指标 |
   | `stock_price` | AkShare | 历史股价与区间涨跌幅 |
+  | `technical_indicator` | AkShare + pandas | MA 均线 / RSI14 / MACD，自动提示金叉死叉 |
+  | `news_search` | AkShare（东方财富） | 个股近期新闻资讯 |
+  | `industry_peers` | AkShare（东方财富） | 所属行业与行业内主要可比公司 |
   | `calculator` | 受限 Python eval | 四则运算、百分比、CAGR |
+- **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格 / 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
+- 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
 
 ## 架构
 
@@ -49,12 +54,13 @@ Web UI 展示 / CLI 打印
 ```
 stock-agent/
 ├── src/
-│   ├── tools.py                  # 5 个工具实现
+│   ├── tools.py                  # 8 个工具实现
 │   ├── react_manual.py           # 手写 Prompt 解析版 ReAct
 │   ├── react_function_calling.py # Function Calling 版 ReAct
-│   ├── agent.py                  # 统一 CLI 入口（--mode manual/fc）
+│   ├── agent.py                  # 统一 CLI 入口（--mode manual/fc，--save-report）
+│   ├── report.py                 # Markdown 研报生成器
 │   ├── evaluate.py               # 两种实现对比评估
-│   └── serve.py                  # FastAPI 服务
+│   └── serve.py                  # FastAPI 服务（含研报下载接口）
 ├── vectorstore/
 │   ├── faiss_index.bin           # FAISS 索引（1024 维，10353 条）
 │   └── faiss_meta.json           # 向量 chunk 元数据
@@ -62,6 +68,7 @@ stock-agent/
 │   └── bge-small-zh-v1.5/        # 本地 embedding 模型（备用）
 ├── evaluation/
 │   └── compare_result.json       # 对比评估结果示例
+├── reports/                      # 自动生成的研报（运行时创建）
 ├── index.html                    # Web UI（流式展示每步循环）
 ├── requirements.txt
 ├── .gitignore
@@ -103,6 +110,22 @@ python agent.py --mode fc --question "宁德时代2023年营业收入是多少�
 
 # 调整最大步数（默认 10）
 python agent.py --mode manual --question "..." --max_steps 8
+
+# 分析结束后导出 Markdown 研报到 reports/ 目录
+python agent.py --mode manual --question "..." --save-report
+
+# 多轮对话（短期记忆），/reset 清空 / /exit 退出
+python agent.py --interactive
+```
+
+推荐使用的示例问题（覆盖新工具）：
+
+```text
+茅台和五粮液2023年毛利率差多少个百分点？
+茅台的技术面怎么样？MACD 和 RSI 处于什么状态？
+茅台最近有什么新闻？
+茅台、五粮液、汾酒在白酒行业里的市值地位如何？
+宁德时代2021-2023年营收复合增长率是多少？
 ```
 
 预期输出（手写版）：
@@ -139,7 +162,27 @@ SSE 事件格式：
 {"type": "start",  "question": "...", "mode": "manual"}
 {"type": "action", "step": 1, "thought": "...", "action": "company_lookup", "action_input": {...}, "observation": "..."}
 {"type": "final",  "step": 6, "thought": "...", "answer": "..."}
+{"type": "report", "file": "reports/report_YYYYMMDD_HHMMSS.md"}
 {"type": "done"}
+```
+
+研报下载：
+
+- `GET /report/{filename}` — 下载指定 Markdown 研报
+- `GET /report/latest` — 下载最新研报
+
+工具单独调用：
+
+```python
+from tools import TOOLS_MAP
+
+print(TOOLS_MAP["company_lookup"](name="贵州茅台"))
+print(TOOLS_MAP["rag_search"](query="茅台2023年毛利率", top_k=3))
+print(TOOLS_MAP["financial_indicator"](symbol="600519"))
+print(TOOLS_MAP["stock_price"](symbol="600519", start_date="20230101", end_date="20231231"))
+print(TOOLS_MAP["technical_indicator"](symbol="600519"))
+print(TOOLS_MAP["news_search"](symbol="600519", top_k=5))
+print(TOOLS_MAP["industry_peers"](symbol="600519"))
 ```
 
 ## 两种实现对比
@@ -164,34 +207,23 @@ python evaluate.py --output ../evaluation/compare_result.json
 ## 作为模块调用
 
 ```python
-import os
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
-import sys
-sys.path.insert(0, "stock-agent/src")
-
+# 手写版
 from react_manual import run as manual_run
 
 for step in manual_run("茅台2023年毛利率是多少？", max_steps=10):
     if step["type"] == "action":
         print(f"Step {step['step']}: {step['action']}({step['action_input']})")
+        print(f"  => {step['observation'][:100]}")
     elif step["type"] == "final":
         print(f"Final: {step['answer']}")
 
-# Function Calling 版接口完全一致
+# Function Calling 版（接口完全一致）
 from react_function_calling import run as fc_run
+for step in fc_run("宁德时代2023年营收？"):
+    ...
 ```
 
-工具单独调用：
-
-```python
-from tools import TOOLS_MAP
-
-print(TOOLS_MAP["company_lookup"](name="贵州茅台"))
-print(TOOLS_MAP["rag_search"](query="茅台2023年毛利率", top_k=3))
-print(TOOLS_MAP["financial_indicator"](symbol="600519"))
-print(TOOLS_MAP["stock_price"](symbol="600519", start_date="20230101", end_date="20231231"))
-```
+单个工具的同构接口调用方式见上文「快速开始」第 3 节。
 
 ## FAQ
 
@@ -207,12 +239,30 @@ A：正常现象，部分模型在中间步骤会省略 Thought 直接输出 Act
 **Q：想换 DeepSeek-V3**
 A：修改环境变量 `AGENT_MODEL="deepseek-v3"`；若走 DeepSeek 官方接口，将 `tools.py` 与 `react_manual.py` 中的 `base_url` 改为 `https://api.deepseek.com/v1`。
 
+**Q：工具返回"系统代理和直连均不可用"**
+A：本机系统代理抖动或断网。工具会自动重试并在代理失效时直连兜底，仍失败则稍后重试；长期如此请检查系统代理设置（控制面板 → Internet 选项 → 连接）。
+
 **Q：Web UI 显示"请求失败"**
 A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 确认服务状态。
 
 ## 免责声明
 
 本项目用于学习 Agent 技术范式与工程实践，数据来源于 AkShare 公开接口及公开年报，不构成投资建议。
+
+## 变更记录
+
+### v2.0（2026-10-24）
+
+- 新增 3 个工具：`technical_indicator`（MA/RSI/MACD + 金叉死叉）、`news_search`（东财个股新闻）、`industry_peers`（行业成分股），工具总数 5 → 8
+- 新增自动研报：分析完成后生成结构化 Markdown（结论/推理链/数据来源/局限性），Web UI 一键下载，CLI 支持 `--save-report`；新增 `GET /report/{filename}` 与 `GET /report/latest` 接口
+- 修复 `technical_indicator` RSI14 全零除法缺陷
+- 网络健壮性：网络类工具自动重试，并在系统代理失效时自动直连兜底；对 LLM 返回简洁错误描述
+- Web UI 视觉重设计：护眼中性灰配色、分段式模式切换、Callout 式步骤展示
+
+### v1.0（初始版本）
+
+- ReAct 双实现：手写 Prompt 解析 / Function Calling
+- 5 个工具 + RAG 年报检索 + FastAPI SSE Web UI + 对比评估
 
 ## License
 

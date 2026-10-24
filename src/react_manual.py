@@ -63,6 +63,9 @@ SYSTEM_PROMPT = """你是一个专业的A股金融分析助手，可以使用以
 3. calculator(expr) - 计算数学表达式（支持四则运算和math函数）
 4. financial_indicator(symbol) - 获取实时财务指标（PE/PB/ROE等）
 5. stock_price(symbol, start_date, end_date) - 获取历史股价，日期格式YYYYMMDD
+6. technical_indicator(symbol) - 获取技术指标（均线MA/RSI/MACD及金叉死叉信号）
+7. news_search(symbol, top_k) - 获取个股近期新闻资讯
+8. industry_peers(symbol, top_k) - 获取个股所属行业及行业内主要可比公司
 
 你必须严格按照以下格式交替输出，每次只能调用一个工具：
 

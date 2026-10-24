@@ -296,6 +296,21 @@
     gap: 16px;
   }
 
+  /* ── 研报导出按钮 ── */
+  .report-btn {
+    display: inline-block;
+    margin-top: 14px;
+    padding: 6px 16px;
+    background: #5c68d8;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .report-btn:hover { background: #4d58c8; }
+
   /* ── FC 版 Thought 提示 ── */
   .fc-thought-note {
     font-size: 12px;
@@ -480,6 +495,7 @@
 
     // 清空上次结果
     document.getElementById('stepsContainer').innerHTML = '';
+    finalCardEl = null;
     setSendEnabled(false);
     setStatus('正在连接...', true);
 
@@ -501,6 +517,7 @@
       const reader  = resp.body.getReader();
       const decoder = new TextDecoder();
       let   buffer  = '';
+    let   finalCardEl = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -529,8 +546,18 @@
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             const card = createFinalCard(data, actionStepCount, elapsed);
             document.getElementById('stepsContainer').appendChild(card);
+            finalCardEl = card;
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             setStatus('完成', false);
+
+          } else if (data.type === 'report') {
+            if (finalCardEl && data.file) {
+              const link = document.createElement('a');
+              link.href = '/report/' + encodeURIComponent(data.file);
+              link.className = 'report-btn';
+              link.textContent = '📄 导出研报 (Markdown)';
+              finalCardEl.appendChild(link);
+            }
 
           } else if (data.type === 'max_steps' || data.type === 'error') {
             const card = createErrorCard(data.answer || data.observation || '未知错误');

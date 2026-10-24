@@ -19,6 +19,7 @@ env/
 # Logs & temp
 *.log
 .cache/
+reports/
 
 # IDE
 .idea/

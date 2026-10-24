@@ -1,8 +1,8 @@
 """
-5个工具的统一实现，供 ReAct Agent 调用
+8个工具的统一实现，供 ReAct Agent 调用
 
 教学重点：
-  1. 工具异构性：语义检索 / 结构化数据 / 实时行情 / 计算 / 静态映射
+  1. 工具异构性：语义检索 / 结构化数据 / 实时行情 / 技术指标 / 新闻 / 行业成分 / 计算 / 静态映射
   2. 每个工具返回统一格式的字符串，便于 LLM 消费
   3. 所有网络请求做异常保护，降级返回错误描述而非抛出
 
@@ -18,6 +18,7 @@
 import os
 import json
 import math
+import time
 import logging
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,43 @@ import faiss
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+# ── 网络重试保护 ──────────────────────────────────────────────────────────────
+# AkShare 底层走 requests，会读取 Windows 系统代理。代理偶发抖动时自动重试，
+# 且在第 2 次起临时绕过代理直连（NO_PROXY="*"），结束后恢复原环境。
+
+_RETRY_KEYWORDS = ("Timeout", "Connection", "Remote", "ProxyError", "Retrying", "Max retries")
+
+def _with_retry(times: int = 3):
+    def deco(fn):
+        def wrapper(*args, **kwargs):
+            original_no_proxy = os.environ.get("NO_PROXY")   # 可能为 None
+            last = None
+            for attempt in range(1, times + 1):
+                # 之后轮次绕过系统代理直连（应对代理半死不活的场景）
+                direct = attempt >= 2
+                if direct and original_no_proxy != "*":
+                    os.environ["NO_PROXY"] = os.environ["no_proxy"] = "*"
+                    logger.warning(f"{fn.__name__} 尝试绕过系统代理直连...")
+                try:
+                    result = str(fn(*args, **kwargs))
+                except Exception as e:
+                    result = f"{fn.__name__} 执行出错: {e}"
+                hit = any(k in result for k in _RETRY_KEYWORDS)
+                if not hit:
+                    return result
+                last = result
+                time.sleep(min(2 ** attempt, 4))
+            # 恢复代理环境
+            if original_no_proxy is None:
+                os.environ.pop("NO_PROXY", None)
+                os.environ.pop("no_proxy", None)
+            else:
+                os.environ["NO_PROXY"] = os.environ["no_proxy"] = original_no_proxy
+            # 面向 LLM 的简洁错误（超长 URL 会污染上下文）
+            return f"{fn.__name__} 网络请求失败：系统代理和直连均不可用，可能是网络波动。请告知用户稍后重试。"
+        return wrapper
+    return deco
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
@@ -124,6 +162,7 @@ def tool_calculator(expr: str) -> str:
 
 # ── AkShare：实时财务指标 ─────────────────────────────────────────────────────
 
+@_with_retry()
 def tool_financial_indicator(symbol: str) -> str:
     """获取 A 股近3年关键财务指标：营收/净利润/毛利率/ROE/资产负债率等"""
     try:
@@ -161,6 +200,7 @@ def tool_financial_indicator(symbol: str) -> str:
 
 # ── AkShare：历史股价 ─────────────────────────────────────────────────────────
 
+@_with_retry()
 def tool_stock_price(symbol: str, start_date: str, end_date: str) -> str:
     """
     获取 A 股历史股价及区间涨跌幅
@@ -196,14 +236,156 @@ def tool_stock_price(symbol: str, start_date: str, end_date: str) -> str:
         return f"stock_price 执行出错: {e}"
 
 
+# ── AkShare：技术指标（MACD / RSI / 均线，纯 pandas 计算） ────────────────────
+
+@_with_retry()
+def tool_technical_indicator(symbol: str) -> str:
+    """
+    获取 A 股最近 120 个交易日行情并计算技术指标：
+    MA5/MA10/MA20/MA60、RSI14、MACD(DIF/DEA/HIST)，并给出金叉/死叉提示
+    """
+    try:
+        from datetime import datetime, timedelta
+        import akshare as ak
+
+        end   = datetime.now()
+        start = end - timedelta(days=300)   # 留足回看天数，保证 MA60 与 MACD 收敛
+        df = ak.stock_zh_a_hist(
+            symbol=symbol,
+            period="daily",
+            start_date=start.strftime("%Y%m%d"),
+            end_date=end.strftime("%Y%m%d"),
+            adjust="qfq",
+        )
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 的行情数据"
+
+        close = df["收盘"].astype(float).reset_index(drop=True)
+
+        # 均线
+        ma5  = close.rolling(5).mean()
+        ma10 = close.rolling(10).mean()
+        ma20 = close.rolling(20).mean()
+        ma60 = close.rolling(60).mean()
+
+        # RSI14（Wilder 平滑，对涨跌幅全为0的情况做除零保护）
+        delta = close.diff()
+        gain  = delta.ewm(alpha=1/14, adjust=False).mean().clip(lower=0)
+        loss  = (-delta).ewm(alpha=1/14, adjust=False).mean().clip(lower=0)
+        denom = gain + loss
+        rsi14 = np.where(denom > 0, 100 * gain / denom, 50.0)
+
+        # MACD（EMA12-EMA26 → DIF；DEA=DIF 的 EMA9；BAR=2*(DIF-DEA)）
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        hist = (dif - dea) * 2
+
+        last = len(close) - 1
+        last_date = str(df.iloc[last]["日期"])
+        last_close = float(close.iloc[last])
+
+        # 判断 DIF 上穿/下穿 DEA 的位置关系
+        cross = ""
+        if dif.iloc[last] > dea.iloc[last] and dif.iloc[last-1] <= dea.iloc[last-1]:
+            cross = " ▲ 金叉"
+        elif dif.iloc[last] < dea.iloc[last] and dif.iloc[last-1] >= dea.iloc[last-1]:
+            cross = " ▼ 死叉"
+
+        rsi_val = float(rsi14.iloc[last])
+        rsi_hint = "超买" if rsi_val >= 80 else "超卖" if rsi_val <= 20 else "中性"
+
+        return (
+            f"股票代码: {symbol}，数据截至 {last_date}（收盘价 {last_close:.2f} 元）\n"
+            f"  MA5:  {ma5.iloc[last]:.2f}\n"
+            f"  MA10: {ma10.iloc[last]:.2f}\n"
+            f"  MA20: {ma20.iloc[last]:.2f}\n"
+            f"  MA60: {ma60.iloc[last]:.2f}\n"
+            f"  RSI14: {rsi_val:.1f}（{rsi_hint}，>80超买/<20超卖）\n"
+            f"  MACD DIF: {dif.iloc[last]:.3f} | DEA: {dea.iloc[last]:.3f} | BAR: {hist.iloc[last]:.3f}{cross}\n"
+            f"  DIF 与 DEA 关系: {'DIF>DEA 多头' if dif.iloc[last] > dea.iloc[last] else 'DIF<DEA 空头'}"
+        )
+    except Exception as e:
+        return f"technical_indicator 执行出错: {e}"
+
+
+# ── AkShare：个股新闻 ─────────────────────────────────────────────────────────
+
+@_with_retry()
+def tool_news_search(symbol: str, top_k: int = 5) -> str:
+    """获取个股最近的新闻资讯（来源：东方财富），返回标题/时间/摘要"""
+    try:
+        import akshare as ak
+        df = ak.stock_news_em(symbol=symbol)
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 的新闻"
+        lines = [f"{symbol} 最近新闻（来源：东方财富）:"]
+        for i, (_, row) in enumerate(df.head(top_k).iterrows(), 1):
+            title  = str(row.get("新闻标题", "")).strip()
+            pub    = str(row.get("发布时间", "")).strip()
+            src    = str(row.get("文章来源", "")).strip() or str(row.get("新闻来源", "")).strip()
+            content = str(row.get("新闻内容", "")).strip()[:120]
+            lines.append(f"[{i}] {title}（{pub}，{src}）\n    {content}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"news_search 执行出错: {e}"
+
+
+# ── AkShare：同行业可比公司 ───────────────────────────────────────────────────
+
+@_with_retry()
+def tool_industry_peers(symbol: str, top_k: int = 10) -> str:
+    """查询个股所属行业及行业内主要成分股（按总市值排序），支持后续横向对比"""
+    try:
+        import akshare as ak
+        info = ak.stock_individual_info_em(symbol=symbol)
+        if info is None or info.empty:
+            return f"未获取到 {symbol} 的公司信息"
+        industry = ""
+        name = ""
+        for _, row in info.iterrows():
+            item, value = str(row.get("item", "")), str(row.get("value", ""))
+            if item == "行业":
+                industry = value
+            elif item == "股票简称":
+                name = value
+        if not industry:
+            return f"{symbol} 未返回行业字段"
+
+        df = ak.stock_board_industry_cons_em(symbol=industry)
+        if df is None or df.empty:
+            return f"{name}({symbol}) 所属板块「{industry}」，但未获取到成分股列表"
+
+        lines = [f"{name}({symbol}) 所属板块「{industry}」，主流成分股（按总市值排序,{top_k}个）:"]
+        cap_key = next((k for k in df.columns if "总市值" in k), None)
+        df_use = df.sort_values(cap_key, ascending=False) if cap_key else df
+        for i, (_, row) in enumerate(df_use.head(top_k).iterrows(), 1):
+            peer_code = str(row.get("代码", ""))
+            peer_name = str(row.get("名称", ""))
+            extra = ""
+            if cap_key:
+                try:
+                    extra = f"（市值 {float(row[cap_key])/1e8:.0f} 亿元）"
+                except (TypeError, ValueError):
+                    pass
+            lines.append(f"[{i}] {peer_name}({peer_code}){extra}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"industry_peers 执行出错: {e}"
+
+
 # ── 统一工具注册表 ─────────────────────────────────────────────────────────────
 
 TOOLS_MAP: dict[str, Any] = {
-    "rag_search":          tool_rag_search,
-    "company_lookup":      tool_company_lookup,
-    "calculator":          tool_calculator,
-    "financial_indicator": tool_financial_indicator,
-    "stock_price":         tool_stock_price,
+    "rag_search":           tool_rag_search,
+    "company_lookup":       tool_company_lookup,
+    "calculator":           tool_calculator,
+    "financial_indicator":  tool_financial_indicator,
+    "stock_price":          tool_stock_price,
+    "technical_indicator":  tool_technical_indicator,
+    "news_search":          tool_news_search,
+    "industry_peers":       tool_industry_peers,
 }
 
 # Function Calling 版所需的 JSON Schema 描述
@@ -278,6 +460,50 @@ TOOLS_SCHEMA = [
                     "end_date":   {"type": "string", "description": "结束日期，格式YYYYMMDD，如'20231231'"},
                 },
                 "required": ["symbol", "start_date", "end_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "technical_indicator",
+            "description": "获取A股技术指标：MA5/MA10/MA20/MA60均线、RSI14、MACD(DIF/DEA/BAR)最新值，并提示金叉/死叉信号，适合回答技术面/趋势/买卖信号类问题",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "股票代码，如'600519'"},
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "news_search",
+            "description": "获取某只A股最近的新闻资讯（东方财富来源），适合查询公司近况、舆情、事件驱动等问题",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "股票代码，如'600519'"},
+                    "top_k":  {"type": "integer", "description": "返回新闻条数，默认5"},
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "industry_peers",
+            "description": "查询A股个股所属行业及行业内主流成分股（按总市值排序），用于横向对比、行业分析场景",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string", "description": "股票代码，如'600519'"},
+                    "top_k":  {"type": "integer", "description": "返回成分股数量，默认10"},
+                },
+                "required": ["symbol"],
             },
         },
     },

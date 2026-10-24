@@ -13,6 +13,7 @@ FastAPI HTTP 服务，提供流式 SSE 接口给 Web UI
 import os
 import sys
 import json
+import time
 import uuid
 import logging
 import asyncio
@@ -21,7 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -90,16 +91,16 @@ async def _stream_react(question: str, max_steps: int, mode: str,
     # 新会话用 reset=True 初始化 system prompt，后续对话追加
     reset = is_new
 
-    queue: asyncio.Queue = asyncio.Queue()
+    item_queue: asyncio.Queue = asyncio.Queue()
     _SENTINEL = object()
 
     def _worker():
         try:
             for step_data in react_run(question, max_steps=max_steps,
                                        reset=reset, history=history):
-                queue.put_nowait(step_data)
+                item_queue.put_nowait(step_data)
         finally:
-            queue.put_nowait(_SENTINEL)
+            item_queue.put_nowait(_SENTINEL)
 
     yield _sse({
         "type": "start", "question": question, "mode": mode,
@@ -109,11 +110,37 @@ async def _stream_react(question: str, max_steps: int, mode: str,
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _worker)
 
+    steps: list = []
+    final_answer: str | None = None
+    start_ts = time.time()
+
     while True:
-        step_data = await queue.get()
+        step_data = await item_queue.get()
         if step_data is _SENTINEL:
             break
+        steps.append(step_data)
+        if step_data.get("type") == "final":
+            final_answer = step_data.get("answer", "")
         yield _sse(step_data)
+
+    # ── 分析结束后自动生成 Markdown 研报 ──────────────────────────────
+    if final_answer:
+        try:
+            from report import build_report_md, save_report
+            elapsed = time.time() - start_ts
+            md = build_report_md(
+                question=question,
+                mode=mode,
+                model=os.getenv("AGENT_MODEL", "qwen-max"),
+                final_answer=final_answer,
+                steps=steps,
+                elapsed_s=elapsed,
+            )
+            report_file = await asyncio.to_thread(save_report, md)
+            yield _sse({"type": "report", "file": report_file, "session_id": session_id})
+        except Exception as e:   # 研报生成失败不影响主流程
+            logger.warning(f"研报生成失败: {e}")
+            yield _sse({"type": "report", "file": None, "error": str(e)})
 
     yield _sse({"type": "done", "session_id": session_id})
 
@@ -142,6 +169,35 @@ async def query_fc(req: QueryRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": os.getenv("AGENT_MODEL", "qwen-max")}
+
+
+# ── 研报下载接口 ──────────────────────────────────────────────────────────────
+REPORT_DIR = Path(__file__).parent.parent / "reports"
+
+@app.get("/report/latest")
+async def report_latest():
+    files = sorted(REPORT_DIR.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return HTMLResponse("暂无研报，请先发起一次分析", status_code=404)
+    return _serve_report_file(files[0])
+
+
+@app.get("/report/{filename}")
+async def report_file(filename: str):
+    safe = Path(filename).name          # 防目录穿越
+    target = REPORT_DIR / safe
+    if not target.is_file():
+        return HTMLResponse("研报不存在", status_code=404)
+    return _serve_report_file(target)
+
+
+def _serve_report_file(path: Path):
+    content = path.read_text(encoding="utf-8")
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+    )
 
 
 # ── 托管 index.html ──────────────────────────────────────────────────────────
