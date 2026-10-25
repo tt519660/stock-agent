@@ -127,6 +127,19 @@ async def _stream_react(question: str, max_steps: int, mode: str,
     query_id = uuid.uuid4().hex[:8]
     cancel_event = _register_cancel_flag(query_id)
 
+    # ── 本次查询的缓存统计（差量：只统计本查询贡献的命中） ────────────────
+    def _cache_snapshot():
+        from tools import cache_stats
+        s = cache_stats()
+        return s["hit"], s["miss"]
+
+    snap_hit, snap_miss = _cache_snapshot()
+
+    def _cache_delta():
+        from tools import cache_stats
+        s = cache_stats()
+        return s["hit"] - snap_hit, s["miss"] - snap_miss
+
     item_queue: asyncio.Queue = asyncio.Queue()
     _SENTINEL = object()
 
@@ -166,7 +179,11 @@ async def _stream_react(question: str, max_steps: int, mode: str,
             steps.append(step_data)
             if step_data.get("type") == "final":
                 final_answer = step_data.get("answer", "")
-            yield _sse(step_data)
+                # final 事件附带本次查询的缓存命中，前端抽屉摘要展示
+                ch, cm = _cache_delta()
+                yield _sse({**step_data, "cache_hits": ch, "cache_misses": cm})
+            else:
+                yield _sse(step_data)
 
         # ── 分析结束后自动生成 Markdown 研报 ──────────────────────────────
         if final_answer:
@@ -187,7 +204,9 @@ async def _stream_react(question: str, max_steps: int, mode: str,
                 logger.warning(f"研报生成失败: {e}")
                 yield _sse({"type": "report", "file": None, "error": str(e)})
 
-        yield _sse({"type": "done", "session_id": session_id})
+        ch, cm = _cache_delta()
+        yield _sse({"type": "done", "session_id": session_id,
+                    "cache_hits": ch, "cache_misses": cm})
 
     except (asyncio.CancelledError, GeneratorExit):
         # 客户端断开（页面刷新/前端 abort）：级联触发打断，避免后台白跑

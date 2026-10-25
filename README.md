@@ -186,10 +186,10 @@ SSE 事件格式：
 ```json
 {"type": "start",   "question": "...", "mode": "manual", "query_id": "ab12cd34"}
 {"type": "action",  "step": 1, "thought": "...", "action": "company_lookup", "action_input": {...}, "observation": "...", "duration_s": 2.3}
-{"type": "final",   "step": 6, "thought": "...", "answer": "...", "duration_s": 5.1}
+{"type": "final",   "step": 6, "thought": "...", "answer": "...", "duration_s": 5.1, "cache_hits": 3, "cache_misses": 5}
 {"type": "stopped"}
 {"type": "report",  "file": "reports/report_YYYYMMDD_HHMMSS.md"}
-{"type": "done"}
+{"type": "done",    "cache_hits": 3, "cache_misses": 5}
 ```
 
 研报下载：

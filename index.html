@@ -454,6 +454,12 @@
     bar.classList.toggle('visible', visible);
   }
 
+  // 拼接缓存命中文案：有工具调用统计时才展示（如 "缓存命中 3/8"）
+  function cacheSuffix(hits, misses) {
+    const total = (hits || 0) + (misses || 0);
+    return total > 0 ? ` · 缓存命中 ${hits}/${total}` : '';
+  }
+
   function setSendEnabled(enabled) {
     const btn = document.getElementById('sendBtn');
     if (enabled) {
@@ -658,7 +664,7 @@
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             // 折叠思考抽屉，meta 汇总，主界面只剩结果
             setDrawer(false);
-            setDrawerMeta(`${actionStepCount} 步 · ${elapsed} 秒`);
+            setDrawerMeta(`${actionStepCount} 步 · ${elapsed} 秒${cacheSuffix(data.cache_hits, data.cache_misses)}`);
             const card = createFinalCard(data, actionStepCount, elapsed);
             document.getElementById('resultArea').appendChild(card);
             finalCardEl = card;
