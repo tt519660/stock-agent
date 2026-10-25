@@ -27,6 +27,7 @@
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
 - **Web UI（DeepSeek 风格思考抽屉）**：运行中实时展开推理步骤、结束后自动收起只留结论；支持随时 ⏹ 停止打断；每步显示耗时
 - 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
+- **LLM/embedding 默认直连**：DashScope/DeepSeek 为国内端点，默认绕过系统代理（代理抖动是 TLS 握手超时的常见根源），`AGENT_TRUST_SYSTEM_PROXY=1` 可改回走代理；LLM 请求超时/断线自动重试一次
 - **工具结果缓存**：6 个网络型工具带进程内 TTL+LRU 缓存（财务指标 1h / 行情 15min / 新闻 5min），同轮重复调用瞬时返回（实测 1.5s → 0.1ms），并防缓存击穿、错误结果不缓存；`--no-cache` / `TOOL_CACHE_DISABLE=1` 可旁路
 
 ## 架构
@@ -277,6 +278,9 @@ A：工具结果有 TTL 缓存（最长 1 小时）。开发和调试时调用 `
 **Q：缓存会不会返回过期数据？**
 A：会——这是缓存换取速度的固有代价。TTL 按数据新鲜度设定（财务指标 1h / 行情 15min / 技术指标 10min / 新闻 5min）；对实时性要求极高的场景请加 `--no-cache`。错误结果（网络失败/异常）一律不缓存，不会固化故障。
 
+**Q：出现 "连接 LLM 服务超时" 或 TLS 握手超时？**
+A：这是系统代理（127.0.0.1 类本地代理）不稳定导致的。v2.2 起所有 LLM/embedding 请求默认**绕过系统代理直连** DashScope（国内端点，无需代理），并内置一次自动重试。若你使用的是需要代理的境外端点（如 OpenAI API），设置 `AGENT_TRUST_SYSTEM_PROXY=1` 改回走代理。
+
 **Q：Web UI 显示"请求失败"**
 A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 确认服务状态。
 
@@ -288,6 +292,7 @@ A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 
 
 ### v2.2（2026-10-25）
 
+- **LLM/embedding 网络加固**：OpenAI 客户端默认直连（httpx `trust_env=False`，DashScope/DeepSeek 国内端点无需走系统代理），LLM 请求超时/断线自动重试一次；`AGENT_TRUST_SYSTEM_PROXY=1` 可改回走代理；服务端异常日志降噪（保留一行摘要）
 - **工具结果缓存层**：6 个网络型工具（rag_search / financial_indicator / stock_price / technical_indicator / news_search / industry_peers）加进程内 TTL+LRU 缓存，同轮重复调用瞬时返回（实测真实调用 1.5s → 0.1ms）
 - 缓存可靠性设计：错误结果一律不缓存（网络故障不会被固化）；同 key 防缓存击穿（并发只算一次）；LRU 有界条目 + 单条大小上限；任何缓存内部异常自动降级直连
 - 缓存 Key 用签名绑定实现参数规范化（位置/关键字参数等价、默认值一致），摘要哈希存储不落参数明文

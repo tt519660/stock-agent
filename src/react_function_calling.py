@@ -42,11 +42,34 @@ def reset_conversation():
 
 # ── LLM 客户端 ────────────────────────────────────────────────────────────────
 # 切换规则同 react_manual.py：AGENT_API_KEY / AGENT_BASE_URL / AGENT_MODEL
-client = OpenAI(
-    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
-    base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-)
+# 网络策略同 react_manual.py：国内端点默认绕过系统代理直连，AGENT_TRUST_SYSTEM_PROXY=1 改回代理
+def _build_client():
+    try:
+        import httpx
+    except ModuleNotFoundError:   # 本环境使用 httpx 分支包
+        import httpx2 as httpx
+    trust = os.getenv("AGENT_TRUST_SYSTEM_PROXY", "0") == "1"
+    return OpenAI(
+        api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        http_client=httpx.Client(trust_env=trust, timeout=60.0),
+    )
+
+client = _build_client()
 MODEL = os.getenv("AGENT_MODEL", "qwen3.8-max")
+
+
+def _llm_create(**kwargs):
+    """轻量重试：网络波动（超时/连接错误）时重试一次再放弃，直接抛出"""
+    import openai
+    for attempt in (1, 2):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except (openai.APITimeoutError, openai.APIConnectionError) as e:
+            if attempt == 2:
+                raise
+            time.sleep(2)
+            logger.warning(f"LLM 请求网络异常，重试: {type(e).__name__}")
 
 FC_SYSTEM_PROMPT = """你是一个专业的A股金融分析助手。
 规则：
@@ -106,7 +129,7 @@ def run(question: str, max_steps: int = 10, reset: bool = True,
             return
 
         _ts = time.time()   # 本步计时起点（覆盖 LLM 调用 + 工具执行）
-        response = client.chat.completions.create(
+        response = _llm_create(
             model=MODEL,
             messages=messages,
             tools=TOOLS_SCHEMA,

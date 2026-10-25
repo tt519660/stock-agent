@@ -150,8 +150,9 @@ async def _stream_react(question: str, max_steps: int, mode: str,
                                        cancel_event=cancel_event):
                 item_queue.put_nowait(step_data)
         except Exception as e:
-            # LLM 调用等异常（欠费/网络/限流）不能让 SSE 静默挂掉，转为 error 事件
-            logger.exception("ReAct 执行异常")
+            # LLM 调用等异常（欠费/网络/限流）转为 error 事件；
+            # 堆栈只在 DEBUG 级输出，常规日志保持一行简洁
+            logger.error(f"ReAct 执行异常: {type(e).__name__}: {e}")
             item_queue.put_nowait({
                 "type": "error",
                 "answer": f"Agent 执行失败: {_friendly_llm_error(e)}",

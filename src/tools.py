@@ -247,13 +247,23 @@ BASE_DIR = Path(__file__).parent.parent
 VECTORSTORE_DIR = BASE_DIR / "vectorstore"
 
 # ── Embedding 客户端（与建索引时相同的模型）────────────────────────────────────
-_embed_client = OpenAI(
-    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
-    base_url=os.getenv(
-        "AGENT_EMBEDDING_BASE_URL",
-        os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-    ),
-)
+# 网络策略同 react_manual.py：国内端点默认绕过系统代理直连，AGENT_TRUST_SYSTEM_PROXY=1 改回代理
+def _build_client():
+    try:
+        import httpx
+    except ModuleNotFoundError:   # 本环境使用 httpx 分支包
+        import httpx2 as httpx
+    trust = os.getenv("AGENT_TRUST_SYSTEM_PROXY", "0") == "1"
+    return OpenAI(
+        api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv(
+            "AGENT_EMBEDDING_BASE_URL",
+            os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        ),
+        http_client=httpx.Client(trust_env=trust, timeout=60.0),
+    )
+
+_embed_client = _build_client()
 EMBED_MODEL = "text-embedding-v3"
 
 # ── 公司映射（名称 → 股票代码） ────────────────────────────────────────────────

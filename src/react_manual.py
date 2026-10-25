@@ -46,11 +46,35 @@ def reset_conversation():
 #   AGENT_API_KEY / AGENT_BASE_URL / AGENT_MODEL
 # 例如切 DeepSeek 官方接口：
 #   AGENT_API_KEY="sk-xxx"  AGENT_BASE_URL="https://api.deepseek.com/v1"  AGENT_MODEL="deepseek-chat"
-client = OpenAI(
-    api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
-    base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
-)
+# 网络策略：DashScope/DeepSeek 均为国内端点，默认绕过系统代理直连（系统代理
+# 经常半死不活导致 TLS 握手超时）；AGENT_TRUST_SYSTEM_PROXY=1 可改回走代理。
+def _build_client():
+    try:
+        import httpx
+    except ModuleNotFoundError:   # 本环境使用 httpx 分支包
+        import httpx2 as httpx
+    trust = os.getenv("AGENT_TRUST_SYSTEM_PROXY", "0") == "1"
+    return OpenAI(
+        api_key=os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv("AGENT_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        http_client=httpx.Client(trust_env=trust, timeout=60.0),
+    )
+
+client = _build_client()
 MODEL = os.getenv("AGENT_MODEL", "qwen3.8-max")
+
+
+def _llm_create(**kwargs):
+    """轻量重试：网络波动（超时/连接错误）时重试一次再放弃，直接抛出"""
+    import openai
+    for attempt in (1, 2):
+        try:
+            return client.chat.completions.create(**kwargs)
+        except (openai.APITimeoutError, openai.APIConnectionError) as e:
+            if attempt == 2:
+                raise
+            time.sleep(2)
+            logger.warning(f"LLM 请求网络异常，重试: {type(e).__name__}")
 
 
 # ── System Prompt ─────────────────────────────────────────────────────────────
@@ -177,7 +201,7 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
             return
 
         _ts = time.time()   # 本步计时起点（覆盖 LLM 调用 + 工具执行）
-        response = client.chat.completions.create(
+        response = _llm_create(
             model=MODEL,
             messages=messages,
             temperature=0,
