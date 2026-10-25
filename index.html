@@ -119,6 +119,15 @@
   }
   .send-btn:hover:not(:disabled) { background: #4d58c8; }
   .send-btn:disabled { background: #c3c7cd; cursor: not-allowed; }
+  .send-btn.running {
+    background: #e5534b;
+    animation: runningPulse 1.6s ease-in-out infinite;
+  }
+  .send-btn.running:hover { background: #d6423a; }
+  @keyframes runningPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.75; }
+  }
 
   /* ── 示例问题 ── */
   .examples { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -322,6 +331,46 @@
   .step-body.collapsed { display: none; }
   .step-toggle.open::before { content: "▲"; }
   .step-toggle:not(.open)::before { content: "▼"; }
+
+  /* ── 思考过程抽屉（DeepSeek 风格）── */
+  .think-drawer {
+    background: #f2f3f5;
+    border: 1px solid #dde0e5;
+    border-radius: 10px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(30, 35, 45, 0.04), 0 1px 3px rgba(30, 35, 45, 0.03);
+    overflow: hidden;
+    animation: fadeIn 0.3s ease;
+  }
+  .think-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 11px 16px;
+    cursor: pointer;
+    user-select: none;
+    color: #4a5058;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .think-header:hover { background: #edeef1; }
+  .think-drawer .caret { color: #8b9099; font-size: 11px; display: inline-block; width: 12px; }
+  .think-drawer .caret::before { content: "▸"; display: inline-block; transition: transform 0.2s; }
+  .think-drawer.open .caret::before { content: "▾"; }
+  .think-title { font-weight: 500; }
+  .think-meta { margin-left: auto; font-size: 12px; color: #8b9099; }
+  .think-body {
+    max-height: 0;
+    overflow-y: hidden;
+    border-top: 1px solid transparent;
+    transition: max-height 0.4s ease, border-color 0.3s;
+  }
+  .think-drawer.open .think-body {
+    max-height: 20000px;
+    overflow-y: auto;
+    border-top-color: #e5e7ea;
+  }
+  .think-body .steps-container { padding: 12px; gap: 10px; }
 </style>
 </head>
 <body>
@@ -348,7 +397,7 @@
     </div>
     <div class="input-row">
       <textarea id="question" placeholder="输入问题，例如：贵州茅台和五粮液2023年的毛利率哪家更高？"></textarea>
-      <button class="send-btn" id="sendBtn" onclick="sendQuery()">发 送</button>
+      <button class="send-btn" id="sendBtn" onclick="onSendOrStopClick()">发 送</button>
     </div>
     <div class="examples">
       <span style="font-size:12px;color:#475569;margin-right:4px;">示例：</span>
@@ -366,14 +415,28 @@
     <span id="statusText">正在思考...</span>
   </div>
 
-  <!-- 步骤 + 结果 -->
-  <div class="steps-container" id="stepsContainer"></div>
+  <!-- 思考过程抽屉（分析中出现，结束后默认收起） -->
+  <div class="think-drawer" id="thinkDrawer" hidden>
+    <div class="think-header" id="thinkHeader">
+      <span class="caret"></span>
+      <span class="think-title">💭 思考与调用过程</span>
+      <span class="think-meta" id="thinkMeta">思考中…</span>
+    </div>
+    <div class="think-body">
+      <div class="steps-container" id="stepsContainer"></div>
+    </div>
+  </div>
+
+  <!-- 每轮最终结果（Final Answer / 错误） -->
+  <div class="steps-container" id="resultArea"></div>
 
 </div>
 
 <script>
   let currentMode = 'manual';
   let isRunning   = false;
+  let currentQueryId = null;
+  let currentAbort   = null;
 
   function setMode(mode, btn) {
     currentMode = mode;
@@ -393,9 +456,45 @@
 
   function setSendEnabled(enabled) {
     const btn = document.getElementById('sendBtn');
-    btn.disabled = !enabled;
-    btn.textContent = enabled ? '发 送' : '运行中...';
-    isRunning = !enabled;
+    if (enabled) {
+      btn.textContent = '发 送';
+      btn.classList.remove('running');
+      isRunning = false;
+    } else {
+      // 运行中按钮保持可点，变为"停止"
+      btn.textContent = '⏹ 停止';
+      btn.classList.add('running');
+      isRunning = true;
+    }
+  }
+
+  // 停止：通知服务端协作式取消 + 断开 SSE 流
+  async function doStop() {
+    try {
+      if (currentQueryId) {
+        await fetch(`/cancel/${currentQueryId}`, { method: 'POST' });
+      }
+    } catch { /* 服务端不可达时也照样断流 */ }
+    if (currentAbort) currentAbort.abort();
+  }
+
+  function onSendOrStopClick() {
+    if (isRunning) doStop(); else sendQuery();
+  }
+
+  // ── 思考抽屉控制 ──────────────────────────────────────────────────────────
+  function setDrawer(open) {
+    document.getElementById('thinkDrawer').classList.toggle('open', open);
+  }
+  function setDrawerMeta(text) {
+    document.getElementById('thinkMeta').textContent = text;
+  }
+  function resetDrawerForNewQuery() {
+    const drawer = document.getElementById('thinkDrawer');
+    drawer.hidden = false;
+    drawer.classList.add('open');
+    document.getElementById('stepsContainer').innerHTML = '';
+    setDrawerMeta('思考中…');
   }
 
   // ── 创建步骤卡片 ──────────────────────────────────────────────────────────
@@ -405,11 +504,12 @@
 
     const isManual = (currentMode === 'manual');
 
-    // 标题
+    // 标题（Step 徽章带耗时）
     const header = document.createElement('div');
     header.className = 'step-header';
+    const dur = stepData.duration_s != null ? ` · ${stepData.duration_s}s` : '';
     header.innerHTML = `
-      <span class="step-badge">Step ${stepData.step}</span>
+      <span class="step-badge">Step ${stepData.step}${dur}</span>
       <span class="step-title">🔧 ${stepData.action}(${JSON.stringify(stepData.action_input||{})})</span>
       <span class="step-toggle open"></span>
     `;
@@ -481,6 +581,13 @@
     return card;
   }
 
+  function createNoticeCard(msg) {
+    const card = document.createElement('div');
+    card.className = 'final-card';
+    card.innerHTML = `<h3 style="color:#6d737c">${esc(msg)}</h3>`;
+    return card;
+  }
+
   function esc(s) {
     return String(s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -493,9 +600,10 @@
     const question = document.getElementById('question').value.trim();
     if (!question) return;
 
-    // 清空上次结果
-    document.getElementById('stepsContainer').innerHTML = '';
-    finalCardEl = null;
+    // 清空上次结果，重建思考抽屉（DeepSeek 风格 A：运行中默认展开）
+    let finalCardEl = null;
+    resetDrawerForNewQuery();
+    document.getElementById('resultArea').innerHTML = '';
     setSendEnabled(false);
     setStatus('正在连接...', true);
 
@@ -504,10 +612,13 @@
     let actionStepCount = 0;
 
     try {
+      currentQueryId = null;
+      currentAbort = new AbortController();
       const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question, max_steps: 10 }),
+        signal: currentAbort.signal,
       });
 
       if (!resp.ok) {
@@ -517,7 +628,6 @@
       const reader  = resp.body.getReader();
       const decoder = new TextDecoder();
       let   buffer  = '';
-    let   finalCardEl = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -533,21 +643,26 @@
           try { data = JSON.parse(line.slice(6)); } catch { continue; }
 
           if (data.type === 'start') {
+            currentQueryId = data.query_id || null;
             setStatus(`🧠 思考中... (${currentMode === 'manual' ? '手写Prompt解析' : 'Function Calling'})`, true);
 
           } else if (data.type === 'action') {
             actionStepCount++;
             setStatus(`Step ${data.step}：正在调用 ${data.action}...`, true);
+            setDrawerMeta(`${actionStepCount} 步 · ${data.action}`);
             const card = createStepCard(data);
             document.getElementById('stepsContainer').appendChild(card);
             card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
           } else if (data.type === 'final') {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            // 折叠思考抽屉，meta 汇总，主界面只剩结果
+            setDrawer(false);
+            setDrawerMeta(`${actionStepCount} 步 · ${elapsed} 秒`);
             const card = createFinalCard(data, actionStepCount, elapsed);
-            document.getElementById('stepsContainer').appendChild(card);
+            document.getElementById('resultArea').appendChild(card);
             finalCardEl = card;
-            card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
             setStatus('完成', false);
 
           } else if (data.type === 'report') {
@@ -559,9 +674,17 @@
               finalCardEl.appendChild(link);
             }
 
+          } else if (data.type === 'stopped') {
+            setDrawer(false);
+            setDrawerMeta(`${actionStepCount} 步 · 已手动停止`);
+            document.getElementById('resultArea').appendChild(createNoticeCard('⏹ 已手动停止，部分中间结果可在思考抽屉查看'));
+            setStatus('', false);
+
           } else if (data.type === 'max_steps' || data.type === 'error') {
+            setDrawer(false);
+            setDrawerMeta(actionStepCount ? `${actionStepCount} 步 · 已中断` : '已中断');
             const card = createErrorCard(data.answer || data.observation || '未知错误');
-            document.getElementById('stepsContainer').appendChild(card);
+            document.getElementById('resultArea').appendChild(card);
             setStatus('', false);
 
           } else if (data.type === 'done') {
@@ -570,12 +693,27 @@
         }
       }
     } catch (err) {
-      document.getElementById('stepsContainer').appendChild(createErrorCard(`请求失败: ${err.message}`));
+      if (err.name === 'AbortError') {
+        // 用户主动停止：断流所致，服务端已级联取消
+        setDrawer(false);
+        setDrawerMeta(`${actionStepCount} 步 · 已手动停止`);
+        document.getElementById('resultArea').appendChild(createNoticeCard('⏹ 已手动停止，部分中间结果可在思考抽屉查看'));
+      } else {
+        setDrawer(false);
+        setDrawerMeta('已中断');
+        document.getElementById('resultArea').appendChild(createErrorCard(`请求失败: ${err.message}`));
+      }
       setStatus('', false);
     } finally {
       setSendEnabled(true);
     }
   }
+
+  // 抽屉头点击：展开 / 收起
+  document.getElementById('thinkHeader').addEventListener('click', () => {
+    const drawer = document.getElementById('thinkDrawer');
+    setDrawer(!drawer.classList.contains('open'));
+  });
 
   // 回车发送（Shift+Enter 换行）
   document.getElementById('question').addEventListener('keydown', e => {

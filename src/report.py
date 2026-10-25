@@ -62,11 +62,12 @@ def build_report_md(question: str, mode: str, model: str,
         obs = str(s.get("observation", "")).replace("\n", " ")[:160]
         args = str(s.get("action_input", {})).replace("\n", " ")
         thought = str(s.get("thought", ""))[:60]
-        rows.append(f"| {s.get('step')} | {thought} | {s.get('action')} | {args} | {obs} |")
+        dur = s.get("duration_s")
+        rows.append(f"| {s.get('step')} | {thought} | {s.get('action')} | {args} | {dur}s | {obs} |")
 
     process_table = (
-        "| Step | Thought | Action | Input | Observation（截断） |\n"
-        "|------|---------|--------|-------|---------------------|\n" + "\n".join(rows)
+        "| Step | Thought | Action | Input | 耗时 | Observation（截断） |\n"
+        "|------|---------|--------|-------|------|---------------------|\n" + "\n".join(rows)
     ) if rows else "（本轮未能完成工具调用）"
 
     finish_line = (

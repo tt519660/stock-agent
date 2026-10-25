@@ -23,8 +23,9 @@
   | `news_search` | AkShare（东方财富） | 个股近期新闻资讯 |
   | `industry_peers` | AkShare（东方财富） | 所属行业与行业内主要可比公司 |
   | `calculator` | 受限 Python eval | 四则运算、百分比、CAGR |
-- **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格 / 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
+- **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格（含每步耗时）/ 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
+- **Web UI（DeepSeek 风格思考抽屉）**：运行中实时展开推理步骤、结束后自动收起只留结论；支持随时 ⏹ 停止打断；每步显示耗时
 - 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
 
 ## 架构
@@ -141,7 +142,7 @@ python agent.py --interactive
 预期输出（手写版）：
 
 ```
-[Step 1]
+[Step 1 · 3.2s]
 🧠 Thought: 需要先获取两家公司的股票代码...
 🔧 Action:  company_lookup
    Input:   {"name": "贵州茅台"}
@@ -160,19 +161,28 @@ uvicorn serve:app --host 0.0.0.0 --port 8000
 
 访问 http://localhost:8000 。
 
+**Web UI 交互（DeepSeek 风格）：**
+
+- 分析进行中：`💭 思考与调用过程` 抽屉默认展开，Thought/Action/Observation 卡片实时流入，每步卡片上标注耗时（如 `Step 3 · 4.2s`）
+- Final Answer 到达后：抽屉自动收起为一行摘要（`5 步 · 47.3 秒`），主界面只展示结论卡片，点击摘要可随时回看完整推理链
+- 运行中发送按钮变为红色 **⏹ 停止**，点击可随时打断（协作式：正在执行的那一步跑完即停，不产生后续步骤消耗）
+- 结论卡片提供"📄 导出研报"一键下载
+
 接口列表：
 
 - `GET  /health` — 健康检查
 - `POST /query/manual` — 手写版，流式 SSE 返回每步
 - `POST /query/fc` — Function Calling 版，流式 SSE 返回每步
+- `POST /cancel/{query_id}` — 打断一次正在进行的分析（query_id 来自 start 事件）
 
 SSE 事件格式：
 
 ```json
-{"type": "start",  "question": "...", "mode": "manual"}
-{"type": "action", "step": 1, "thought": "...", "action": "company_lookup", "action_input": {...}, "observation": "..."}
-{"type": "final",  "step": 6, "thought": "...", "answer": "..."}
-{"type": "report", "file": "reports/report_YYYYMMDD_HHMMSS.md"}
+{"type": "start",   "question": "...", "mode": "manual", "query_id": "ab12cd34"}
+{"type": "action",  "step": 1, "thought": "...", "action": "company_lookup", "action_input": {...}, "observation": "...", "duration_s": 2.3}
+{"type": "final",   "step": 6, "thought": "...", "answer": "...", "duration_s": 5.1}
+{"type": "stopped"}
+{"type": "report",  "file": "reports/report_YYYYMMDD_HHMMSS.md"}
 {"type": "done"}
 ```
 
@@ -252,6 +262,9 @@ A：修改环境变量 `AGENT_MODEL="deepseek-v3"`；若走 DeepSeek 官方接�
 **Q：工具返回"系统代理和直连均不可用"**
 A：本机系统代理抖动或断网。工具会自动重试并在代理失效时直连兜底，仍失败则稍后重试；长期如此请检查系统代理设置（控制面板 → Internet 选项 → 连接）。
 
+**Q：点击 ⏹ 停止后为什么没有立即停下？**
+A：打断是协作式的——正在执行中的那一步（LLM 生成最多约 5s，AkShare 工具最多约 20s）会跑完才停止，不会继续消耗后续步骤的 token；网页关闭/刷新也会自动级联取消。
+
 **Q：Web UI 显示"请求失败"**
 A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 确认服务状态。
 
@@ -260,6 +273,14 @@ A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 
 本项目用于学习 Agent 技术范式与工程实践，数据来源于 AkShare 公开接口及公开年报，不构成投资建议。
 
 ## 变更记录
+
+### v2.1（2026-10-24）
+
+- Web UI 交互升级为 DeepSeek 风格：思考与调用过程收进可展开抽屉，运行中实时流入、结束后自动收起，主界面只展示结论
+- 新增随时打断：运行中一键 ⏹ 停止（协作式取消 + 客户端断流双保险，页面刷新自动级联取消），新增 `POST /cancel/{query_id}` 接口
+- 每步显示耗时：步骤卡片、CLI 输出、研报表格三端同步展示 `duration_s`
+- LLM 错误友好化：SSE 流不再静默挂掉，欠费/Key 无效/限流等转为可读提示；支持 `AGENT_BASE_URL` / `AGENT_API_KEY` 切换模型服务商，默认模型改为 `qwen3.8-max`
+- 研究报告推理链表格新增耗时列
 
 ### v2.0（2026-10-24）
 

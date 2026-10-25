@@ -125,7 +125,8 @@ def _parse_step(text: str) -> dict:
 # ── ReAct 核心循环 ─────────────────────────────────────────────────────────────
 
 def run(question: str, max_steps: int = 10, verbose: bool = True,
-        reset: bool = True, history: list | None = None) -> Generator[dict, None, None]:
+        reset: bool = True, history: list | None = None,
+        cancel_event=None) -> Generator[dict, None, None]:
     """
     执行 ReAct 循环，yield 每一步的结构化结果
 
@@ -133,6 +134,9 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
     调用 reset_conversation() 或传入 reset=True 可清空记忆，开始全新对话。
     传入 history=[] 可使用外部管理的对话历史（serve.py 多 session 场景），
     此时由调用方负责 history 的生命周期，模块级 _conversation_history 不受影响。
+
+    支持打断：传入 threading.Event 作为 cancel_event，
+    每步 LLM 调用前与工具执行前检查；置位后 yield {"type": "stopped"} 并结束。
 
     每个 yield 的 dict 格式：
       {"step": int, "thought": str, "action": str, "action_input": dict, "observation": str}
@@ -142,6 +146,9 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
     from tools import TOOLS_MAP
 
     global _conversation_history
+
+    def _interrupted() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
 
     if history is not None:
         if reset:
@@ -159,6 +166,17 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
         messages = _conversation_history
 
     for step in range(1, max_steps + 1):
+        if _interrupted():
+            _conversation_history.append({"role": "assistant", "content": "（用户手动停止了本次分析）"})
+            yield {
+                "step":   step,
+                "type":   "stopped",
+                "thought": "",
+                "answer": "已手动停止",
+            }
+            return
+
+        _ts = time.time()   # 本步计时起点（覆盖 LLM 调用 + 工具执行）
         response = client.chat.completions.create(
             model=MODEL,
             messages=messages,
@@ -175,6 +193,7 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
                 "type":    "final",
                 "thought": parsed["thought"],
                 "answer":  parsed["answer"],
+                "duration_s": round(time.time() - _ts, 1),
             }
             return
 
@@ -184,10 +203,22 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
                 "step":        step,
                 "type":        "error",
                 "observation": f"格式解析失败，原始输出：{llm_output[:200]}",
+                "duration_s":  round(time.time() - _ts, 1),
             }
             return
 
-        # 执行工具
+        # 执行工具（LLM 已返回但工具未开跑，此间隙也可打断）
+        if _interrupted():
+            messages.append({"role": "assistant", "content": llm_output})
+            _conversation_history.append({"role": "assistant", "content": "（用户手动停止了本次分析）"})
+            yield {
+                "step":   step,
+                "type":   "stopped",
+                "thought": "",
+                "answer": "已手动停止",
+            }
+            return
+
         tool_name  = parsed["action"]
         tool_args  = parsed["action_input"]
         tool_fn    = TOOLS_MAP.get(tool_name)
@@ -207,6 +238,7 @@ def run(question: str, max_steps: int = 10, verbose: bool = True,
             "action":       tool_name,
             "action_input": tool_args,
             "observation":  str(observation),
+            "duration_s":   round(time.time() - _ts, 1),
         }
         yield step_result
 
@@ -258,7 +290,7 @@ def run_and_print(question: str, max_steps: int = 10, reset: bool = True):
         stype = step_data["type"]
 
         if stype == "action":
-            print(f"\n[Step {step_data['step']}]")
+            print(f"\n[Step {step_data['step']} · {step_data.get('duration_s', 0)}s]")
             print(_c("thought", f"🧠 Thought: {step_data['thought']}"))
             print(_c("action",  f"🔧 Action:  {step_data['action']}"))
             print(_c("action",  f"   Input:   {json.dumps(step_data['action_input'], ensure_ascii=False)}"))

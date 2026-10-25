@@ -36,6 +36,22 @@ logger = logging.getLogger(__name__)
 _sessions: dict[str, list] = {}
 _sessions_lock = threading.Lock()
 
+# ── 打断支持：query_id → cancel_event ─────────────────────────────────────────
+_cancel_flags: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+
+def _register_cancel_flag(query_id: str) -> threading.Event:
+    ev = threading.Event()
+    with _cancel_lock:
+        _cancel_flags[query_id] = ev
+    return ev
+
+
+def _release_cancel_flag(query_id: str) -> None:
+    with _cancel_lock:
+        _cancel_flags.pop(query_id, None)
+
 
 # ── 预加载 FAISS（启动时执行一次）────────────────────────────────────────────
 @asynccontextmanager
@@ -107,13 +123,18 @@ async def _stream_react(question: str, max_steps: int, mode: str,
     # 新会话用 reset=True 初始化 system prompt，后续对话追加
     reset = is_new
 
+    # ── 本次查询的取消标志 ──────────────────────────────────────────────
+    query_id = uuid.uuid4().hex[:8]
+    cancel_event = _register_cancel_flag(query_id)
+
     item_queue: asyncio.Queue = asyncio.Queue()
     _SENTINEL = object()
 
     def _worker():
         try:
             for step_data in react_run(question, max_steps=max_steps,
-                                       reset=reset, history=history):
+                                       reset=reset, history=history,
+                                       cancel_event=cancel_event):
                 item_queue.put_nowait(step_data)
         except Exception as e:
             # LLM 调用等异常（欠费/网络/限流）不能让 SSE 静默挂掉，转为 error 事件
@@ -125,47 +146,56 @@ async def _stream_react(question: str, max_steps: int, mode: str,
         finally:
             item_queue.put_nowait(_SENTINEL)
 
-    yield _sse({
-        "type": "start", "question": question, "mode": mode,
-        "session_id": session_id,
-    })
+    try:
+        yield _sse({
+            "type": "start", "question": question, "mode": mode,
+            "session_id": session_id, "query_id": query_id,
+        })
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _worker)
+        loop = asyncio.get_event_loop()
+        loop.run_in_executor(None, _worker)
 
-    steps: list = []
-    final_answer: str | None = None
-    start_ts = time.time()
+        steps: list = []
+        final_answer: str | None = None
+        start_ts = time.time()
 
-    while True:
-        step_data = await item_queue.get()
-        if step_data is _SENTINEL:
-            break
-        steps.append(step_data)
-        if step_data.get("type") == "final":
-            final_answer = step_data.get("answer", "")
-        yield _sse(step_data)
+        while True:
+            step_data = await item_queue.get()
+            if step_data is _SENTINEL:
+                break
+            steps.append(step_data)
+            if step_data.get("type") == "final":
+                final_answer = step_data.get("answer", "")
+            yield _sse(step_data)
 
-    # ── 分析结束后自动生成 Markdown 研报 ──────────────────────────────
-    if final_answer:
-        try:
-            from report import build_report_md, save_report
-            elapsed = time.time() - start_ts
-            md = build_report_md(
-                question=question,
-                mode=mode,
-                model=os.getenv("AGENT_MODEL", "qwen3.8-max"),
-                final_answer=final_answer,
-                steps=steps,
-                elapsed_s=elapsed,
-            )
-            report_file = await asyncio.to_thread(save_report, md)
-            yield _sse({"type": "report", "file": report_file, "session_id": session_id})
-        except Exception as e:   # 研报生成失败不影响主流程
-            logger.warning(f"研报生成失败: {e}")
-            yield _sse({"type": "report", "file": None, "error": str(e)})
+        # ── 分析结束后自动生成 Markdown 研报 ──────────────────────────────
+        if final_answer:
+            try:
+                from report import build_report_md, save_report
+                elapsed = time.time() - start_ts
+                md = build_report_md(
+                    question=question,
+                    mode=mode,
+                    model=os.getenv("AGENT_MODEL", "qwen3.8-max"),
+                    final_answer=final_answer,
+                    steps=steps,
+                    elapsed_s=elapsed,
+                )
+                report_file = await asyncio.to_thread(save_report, md)
+                yield _sse({"type": "report", "file": report_file, "session_id": session_id})
+            except Exception as e:   # 研报生成失败不影响主流程
+                logger.warning(f"研报生成失败: {e}")
+                yield _sse({"type": "report", "file": None, "error": str(e)})
 
-    yield _sse({"type": "done", "session_id": session_id})
+        yield _sse({"type": "done", "session_id": session_id})
+
+    except (asyncio.CancelledError, GeneratorExit):
+        # 客户端断开（页面刷新/前端 abort）：级联触发打断，避免后台白跑
+        logger.info(f"客户端断开, 级联取消 {query_id}")
+        raise
+    finally:
+        cancel_event.set()           # 正常结束与否都置位；worker 已结束时无副作用
+        _release_cancel_flag(query_id)
 
 
 # ── 路由 ──────────────────────────────────────────────────────────────────────
@@ -192,6 +222,18 @@ async def query_fc(req: QueryRequest):
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": os.getenv("AGENT_MODEL", "qwen3.8-max")}
+
+
+@app.post("/cancel/{query_id}")
+async def cancel_query(query_id: str):
+    """打断一次正在进行的分析（协作式：当前子步骤跑完后立即停止）"""
+    with _cancel_lock:
+        ev = _cancel_flags.get(query_id)
+    if ev is not None and not ev.is_set():
+        ev.set()
+        logger.info(f"收到打断请求 {query_id}")
+        return {"cancelled": True}
+    return {"cancelled": False}
 
 
 # ── 研报下载接口 ──────────────────────────────────────────────────────────────
