@@ -1,11 +1,25 @@
 # stock-agent
 
-以 A 股金融分析为场景的 **ReAct（Reasoning + Acting）Agent** 项目，基于 LLM 实现 Thought → Action → Observation 循环，逐步调用工具完成财务对比、年报检索、股价分析、技术面判断、舆情追踪、行业横向对比等任务。
+以 A 股金融分析为真实场景的 **ReAct（Reasoning + Acting）Agent 参考**：
+LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成财务对比、
+年报深度检索、股价与技术面分析、舆情追踪、行业横向对比等任务，
+最终自动产出一份结构化 Markdown 研报。
 
-提供两种工程实现，可直接对比学习：
+**为什么值得读这个仓库** —— 一个刻意"不用框架"的 Agent 教学参考工程：
 
-- **手写 Prompt 解析版**：`Thought / Action / Action Input` 格式约束 + 正则解析，推理过程完全可见
-- **Function Calling 版**：通过 OpenAI 风格的 `tool_calls` 接口原生注册工具，格式由 API 保证
+- 🧠 **双实现可对照学习**：同一套工具、同一份评估脚本，跑两种推理范式——
+  手写 Prompt 解析版（Thought/Action 格式约束 + 正则解析，模型每步"想了什么"完全透明）
+  vs Function Calling 版（`tool_calls` API 原生能力，格式鲁棒性由 SDK 保证）。
+  从第一行代码看清 Agent 循环本质，而非 LangChain/AutoGen 的框架黑箱
+- 🔌 **真实数据而非玩具数据**：8 个工具打通 4 类数据源——DashScope Embedding +
+  FAISS 年报向量检索（5 家公司 2021-2023 年报、10353 条向量）、AkShare 实时财务
+  指标/行情/技术指标/新闻/行业成分、受限计算器、防幻觉公司映射
+- 🛡️ **生产级健壮性**：区分 demo 与工程的正是这些不受欢迎的部分——
+  网络异常 3 次重试 + 代理失效自动直连、工具结果 TTL 缓存（防击穿/错误不缓存/
+  LRU 有界）、随时协作式打断（页面刷新级联取消）、LLM 欠费/限流/超时友好降级
+- 🔍 **全链路可观测**：DeepSeek 风格思考抽屉实时展开每步推理、每步耗时埋点、
+  每轮缓存命中统计、自动生成含推理链表格的研报，`evaluate.py` 双实现对比一键复现
+- 💬 **多轮对话记忆**：session 隔离的短期记忆，追问"再算第一家"也能接住上下文
 
 > 仅供学习研究使用，不构成任何投资建议。
 
