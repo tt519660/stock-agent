@@ -18,6 +18,8 @@ import json
 import time
 import argparse
 import logging
+# 评估必须测真实冷路径：TOOL_CACHE_DISABLE=1 → 工具缓存完全旁路
+os.environ["TOOL_CACHE_DISABLE"] = "1"
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 sys.path.insert(0, os.path.dirname(__file__))

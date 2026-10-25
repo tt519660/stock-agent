@@ -33,7 +33,12 @@ if __name__ == "__main__":
                         help="多轮对话模式（短期记忆）")
     parser.add_argument("--save-report", action="store_true",
                         help="分析结束后导出 Markdown 研报到 reports/ 目录")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="禁用工具结果缓存（全部走真实网络请求)")
     args = parser.parse_args()
+
+    if args.no_cache:
+        os.environ["TOOL_CACHE_DISABLE"] = "1"
 
     if args.interactive:
         if args.mode == "manual":
@@ -58,6 +63,9 @@ if __name__ == "__main__":
             elif step_data["type"] == "final":
                 final_answer = step_data["answer"]
                 print(f"\n✅ Final Answer:\n{final_answer}")
+            elif step_data["type"] == "stopped":
+                final_answer = "已手动停止"
+                print("\n⏹ 已手动停止")
             steps.append(step_data)
 
         from report import build_report_md, save_report

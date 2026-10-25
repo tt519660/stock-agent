@@ -27,6 +27,7 @@
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
 - **Web UI（DeepSeek 风格思考抽屉）**：运行中实时展开推理步骤、结束后自动收起只留结论；支持随时 ⏹ 停止打断；每步显示耗时
 - 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
+- **工具结果缓存**：6 个网络型工具带进程内 TTL+LRU 缓存（财务指标 1h / 行情 15min / 新闻 5min），同轮重复调用瞬时返回（实测 1.5s → 0.1ms），并防缓存击穿、错误结果不缓存；`--no-cache` / `TOOL_CACHE_DISABLE=1` 可旁路
 
 ## 架构
 
@@ -55,7 +56,7 @@ Web UI 展示 / CLI 打印
 ```
 stock-agent/
 ├── src/
-│   ├── tools.py                  # 8 个工具实现
+│   ├── tools.py                  # 8 个工具实现 + 网络重试 + 进程内 TTL 缓存
 │   ├── react_manual.py           # 手写 Prompt 解析版 ReAct
 │   ├── react_function_calling.py # Function Calling 版 ReAct
 │   ├── agent.py                  # 统一 CLI 入口（--mode manual/fc，--save-report）
@@ -125,6 +126,9 @@ python agent.py --mode manual --question "..." --max_steps 8
 # 分析结束后导出 Markdown 研报到 reports/ 目录
 python agent.py --mode manual --question "..." --save-report
 
+# 禁用工具缓存（全部走真实网络请求）
+python agent.py --mode manual --question "..." --no-cache
+
 # 多轮对话（短期记忆），/reset 清空 / /exit 退出
 python agent.py --interactive
 ```
@@ -170,10 +174,12 @@ uvicorn serve:app --host 0.0.0.0 --port 8000
 
 接口列表：
 
-- `GET  /health` — 健康检查
+- `GET  /health` — 健康检查（附带缓存状态）
 - `POST /query/manual` — 手写版，流式 SSE 返回每步
 - `POST /query/fc` — Function Calling 版，流式 SSE 返回每步
 - `POST /cancel/{query_id}` — 打断一次正在进行的分析（query_id 来自 start 事件）
+- `GET  /cache/stats` — 工具缓存运行统计（命中数 / 命中率 / 条目数）
+- `POST /cache/clear` — 手动清空工具缓存（调试改完工具逻辑立即生效用）
 
 SSE 事件格式：
 
@@ -265,6 +271,12 @@ A：本机系统代理抖动或断网。工具会自动重试并在代理失效�
 **Q：点击 ⏹ 停止后为什么没有立即停下？**
 A：打断是协作式的——正在执行中的那一步（LLM 生成最多约 5s，AkShare 工具最多约 20s）会跑完才停止，不会继续消耗后续步骤的 token；网页关闭/刷新也会自动级联取消。
 
+**Q：为什么我改了工具代码但结果没变？**
+A：工具结果有 TTL 缓存（最长 1 小时）。开发和调试时调用 `POST /cache/clear` 清空，或设置 `TOOL_CACHE_DISABLE=1` / CLI `--no-cache` 旁路；evaluate.py 评估时自动禁用缓存。
+
+**Q：缓存会不会返回过期数据？**
+A：会——这是缓存换取速度的固有代价。TTL 按数据新鲜度设定（财务指标 1h / 行情 15min / 技术指标 10min / 新闻 5min）；对实时性要求极高的场景请加 `--no-cache`。错误结果（网络失败/异常）一律不缓存，不会固化故障。
+
 **Q：Web UI 显示"请求失败"**
 A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 确认服务状态。
 
@@ -273,6 +285,15 @@ A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 
 本项目用于学习 Agent 技术范式与工程实践，数据来源于 AkShare 公开接口及公开年报，不构成投资建议。
 
 ## 变更记录
+
+### v2.2（2026-10-25）
+
+- **工具结果缓存层**：6 个网络型工具（rag_search / financial_indicator / stock_price / technical_indicator / news_search / industry_peers）加进程内 TTL+LRU 缓存，同轮重复调用瞬时返回（实测真实调用 1.5s → 0.1ms）
+- 缓存可靠性设计：错误结果一律不缓存（网络故障不会被固化）；同 key 防缓存击穿（并发只算一次）；LRU 有界条目 + 单条大小上限；任何缓存内部异常自动降级直连
+- 缓存 Key 用签名绑定实现参数规范化（位置/关键字参数等价、默认值一致），摘要哈希存储不落参数明文
+- 运维接口：`GET /cache/stats` 命中率统计、`POST /cache/clear` 手动清空，`/health` 附带缓存状态
+- 旁路开关：`TOOL_CACHE_DISABLE=1` 环境变量 / CLI `--no-cache`；evaluate.py 评估强制冷路径
+- 修复 `_with_retry` wrapper 未设置 `functools.wraps` 导致函数名丢失的隐患
 
 ### v2.1（2026-10-24）
 

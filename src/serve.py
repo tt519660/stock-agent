@@ -221,7 +221,12 @@ async def query_fc(req: QueryRequest):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": os.getenv("AGENT_MODEL", "qwen3.8-max")}
+    from tools import cache_stats as _stats
+    return {
+        "status": "ok",
+        "model": os.getenv("AGENT_MODEL", "qwen3.8-max"),
+        "cache": _stats(),
+    }
 
 
 @app.post("/cancel/{query_id}")
@@ -234,6 +239,21 @@ async def cancel_query(query_id: str):
         logger.info(f"收到打断请求 {query_id}")
         return {"cancelled": True}
     return {"cancelled": False}
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    """工具缓存运行统计（命中数/命中率/条目数/是否启用）"""
+    from tools import cache_stats as _stats
+    return _stats()
+
+
+@app.post("/cache/clear")
+async def cache_clear():
+    """手动清空工具缓存（调试：改了工具逻辑后立即生效）"""
+    from tools import clear_cache as _clear
+    _clear()
+    return {"cleared": True}
 
 
 # ── 研报下载接口 ──────────────────────────────────────────────────────────────

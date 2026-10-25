@@ -13,6 +13,8 @@
 注意：
   rag_search 使用 DashScope text-embedding-v3（1024维）与建索引时保持一致，
   需要设置 DASHSCOPE_API_KEY 环境变量。
+  6 个网络型工具带进程内 TTL+LRU 缓存（_CACHE_TTL 可调）；
+  环境变量 TOOL_CACHE_DISABLE=1 可完全旁路，clear_cache()/cache_stats() 供运维接口使用。
 """
 
 import os
@@ -20,7 +22,12 @@ import json
 import math
 import time
 import logging
+import hashlib
+import inspect
+import threading
+import functools
 from pathlib import Path
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -37,6 +44,7 @@ _RETRY_KEYWORDS = ("Timeout", "Connection", "Remote", "ProxyError", "Retrying", 
 
 def _with_retry(times: int = 3):
     def deco(fn):
+        @functools.wraps(fn)   # 保留原名，外层 _with_cache 依赖 __name__ 匹配 TTL 表
         def wrapper(*args, **kwargs):
             original_no_proxy = os.environ.get("NO_PROXY")   # 可能为 None
             last = None
@@ -65,6 +73,174 @@ def _with_retry(times: int = 3):
             return f"{fn.__name__} 网络请求失败：系统代理和直连均不可用，可能是网络波动。请告知用户稍后重试。"
         return wrapper
     return deco
+
+
+# ── 工具结果缓存（进程内 TTL + LRU） ──────────────────────────────────────────
+# 目标：消除同一轮分析中的重复网络调用（如同公司 financial_indicator 被调多次）。
+# 原则：所有缓存故障一律降级为"无缓存直连"，绝不拖垮主流程；
+#       错误结果一律不缓存，避免把网络波动的报错固化 TTL 时长。
+
+_CACHE_TTL = {   # 各工具缓存时长（秒），按数据新鲜度设定
+    "rag_search":          600,   # embedding 按次计费，重复问题直接命中
+    "financial_indicator": 3600,  # 年报数据
+    "stock_price":         900,   # 盘中行情 15min
+    "technical_indicator": 600,
+    "news_search":         300,   # 资讯更新最频繁
+    "industry_peers":      3600,  # 成分股月级变化
+}
+
+_CACHE_MAX_ENTRIES = 256          # LRU 容量上限（约 16MB 内存封顶）
+_CACHE_MAX_ENTRY_BYTES = 65536    # 单条上限，超大结果（如长新闻列表）不缓存
+_CACHE_DISABLE_ENV = "TOOL_CACHE_DISABLE"
+
+_MISS = object()   # get 未命中哨兵（缓存值可能为空字符串，不能用 None 判断）
+
+class _ToolCache:
+    """线程安全的进程内 TTL 缓存：LRU 淘汰 + 按条目大小限制 + 同 key 防击穿"""
+
+    def __init__(self, max_entries: int = _CACHE_MAX_ENTRIES,
+                 max_entry_bytes: int = _CACHE_MAX_ENTRY_BYTES):
+        self._store: OrderedDict[str, str] = OrderedDict()
+        self._expire: dict[str, float] = {}
+        self._lock = threading.RLock()
+        self._inflight: dict[str, threading.Lock] = {}
+        self._max_entries = max_entries
+        self._max_entry_bytes = max_entry_bytes
+        self.stats = {"hit": 0, "miss": 0, "skip_error": 0, "evicted": 0, "bypass": 0}
+
+    def get(self, key: str):
+        with self._lock:
+            if key not in self._store:
+                return _MISS
+            if self._expire[key] < time.time():
+                self._store.pop(key, None)
+                del self._expire[key]
+                return _MISS
+            self._store.move_to_end(key)   # LRU 刷新
+            return self._store[key]
+
+    def set(self, key: str, value: str, ttl: float):
+        if len(value.encode("utf-8", errors="replace")) > self._max_entry_bytes:
+            self.stats["skip_error"] += 1
+            return
+        with self._lock:
+            self._store[key] = value
+            self._expire[key] = time.time() + ttl
+            self._store.move_to_end(key)
+            while len(self._store) > self._max_entries:   # LRU 驱逐最旧
+                self._store.popitem(last=False)
+                self.stats["evicted"] += 1
+
+    def inflight(self, key: str) -> threading.Lock:
+        """同 key 的计算互斥锁：miss 期间后来的并发请求等待后读结果"""
+        with self._lock:
+            lk = self._inflight.get(key)
+            if lk is None:
+                lk = threading.Lock()
+                self._inflight[key] = lk
+            return lk
+
+    def release_inflight(self, key: str):
+        with self._lock:
+            self._inflight.pop(key, None)
+
+    def clear(self):
+        with self._lock:
+            self._store.clear()
+            self._expire.clear()
+
+    def info(self) -> dict:
+        with self._lock:
+            total = self.stats["hit"] + self.stats["miss"]
+            return {
+                **self.stats,
+                "entries": len(self._store),
+                "enabled": os.getenv(_CACHE_DISABLE_ENV) != "1",
+                "hit_rate": (self.stats["hit"] / total) if total else 0.0,
+            }
+
+_CACHE = _ToolCache()
+
+
+def _is_error_result(result: str) -> bool:
+    """命中错误关键词的结果不缓存（重试耗尽后的网络错误 / 工具内部异常）"""
+    markers = ("执行出错", "网络请求失败", *_RETRY_KEYWORDS)
+    return any(m in result for m in markers)
+
+
+def _make_key(fn, name: str, args: tuple, kwargs: dict):
+    """Key 规范化 + 摘要哈希：位置/关键字参数经签名绑定后等价；不存参数明文"""
+    try:
+        try:
+            bound = inspect.signature(fn).bind(*args, **kwargs)
+            bound.apply_defaults()   # 原地填充默认值；调用不合法时抛 TypeError
+            parts = {k: str(v) for k, v in bound.arguments.items()}
+        except (TypeError, ValueError):
+            # 签名绑定失败（调用本身可能不合法）→ 退化为原始形式，仍保持一致性
+            parts = {"a": [str(v) for v in args], "kw": {k: str(v) for k, v in kwargs.items()}}
+        raw = json.dumps(parts, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        return f"{name}:{digest}"
+    except (TypeError, ValueError):
+        return None   # 规范化失败 → 该调用不缓存，宁可不缓存不可错配
+
+
+def _with_cache():
+    """工具缓存装饰器：置于 @_with_retry 之外，命中即零网络"""
+    def deco(fn):
+        name = fn.__name__.replace("tool_", "")
+        ttl = _CACHE_TTL.get(name)
+        if ttl is None:   # 未配置 TTL 的工具（company_lookup/calculator）不缓存
+            return fn
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            if os.getenv(_CACHE_DISABLE_ENV) == "1":
+                _CACHE.stats["bypass"] += 1
+                return fn(*args, **kwargs)
+
+            key = _make_key(fn, name, args, kwargs)
+            if key is None:
+                _CACHE.stats["skip_error"] += 1
+                return fn(*args, **kwargs)
+
+            cached = _CACHE.get(key)
+            if cached is not _MISS:
+                _CACHE.stats["hit"] += 1
+                return cached
+
+            lk = _CACHE.inflight(key)
+            try:
+                with lk:   # 同 key 并发：后者等待后双检，只算一次
+                    cached = _CACHE.get(key)
+                    if cached is not _MISS:
+                        _CACHE.stats["hit"] += 1
+                        return cached
+                    _CACHE.stats["miss"] += 1
+                    result = str(fn(*args, **kwargs))
+                    if _is_error_result(result):
+                        _CACHE.stats["skip_error"] += 1   # 错误不落缓存
+                    else:
+                        _CACHE.set(key, result, ttl)
+                    return result
+            except Exception:   # 缓存路径任何异常都降级直连
+                logger.warning(f"工具缓存异常，降级直连: {name}", exc_info=True)
+                return fn(*args, **kwargs)
+            finally:
+                _CACHE.release_inflight(key)
+        return wrapper
+    return deco
+
+
+def clear_cache():
+    """手动清空全部缓存（HTTP /cache/clear 调用）"""
+    _CACHE.clear()
+    logger.info("工具缓存已手动清空")
+
+
+def cache_stats() -> dict:
+    """缓存运行统计（HTTP /cache/stats 调用）"""
+    return _CACHE.info()
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent.parent
@@ -115,6 +291,7 @@ def _embed_query(text: str) -> np.ndarray:
     return vec.reshape(1, -1)
 
 
+@_with_cache()
 def tool_rag_search(query: str, top_k: int = 5) -> str:
     """在年报 FAISS 索引中语义检索，返回最相关的文本段落"""
     try:
@@ -165,6 +342,7 @@ def tool_calculator(expr: str) -> str:
 
 # ── AkShare：实时财务指标 ─────────────────────────────────────────────────────
 
+@_with_cache()
 @_with_retry()
 def tool_financial_indicator(symbol: str) -> str:
     """获取 A 股近3年关键财务指标：营收/净利润/毛利率/ROE/资产负债率等"""
@@ -203,6 +381,7 @@ def tool_financial_indicator(symbol: str) -> str:
 
 # ── AkShare：历史股价 ─────────────────────────────────────────────────────────
 
+@_with_cache()
 @_with_retry()
 def tool_stock_price(symbol: str, start_date: str, end_date: str) -> str:
     """
@@ -241,6 +420,7 @@ def tool_stock_price(symbol: str, start_date: str, end_date: str) -> str:
 
 # ── AkShare：技术指标（MACD / RSI / 均线，纯 pandas 计算） ────────────────────
 
+@_with_cache()
 @_with_retry()
 def tool_technical_indicator(symbol: str) -> str:
     """
@@ -315,6 +495,7 @@ def tool_technical_indicator(symbol: str) -> str:
 
 # ── AkShare：个股新闻 ─────────────────────────────────────────────────────────
 
+@_with_cache()
 @_with_retry()
 def tool_news_search(symbol: str, top_k: int = 5) -> str:
     """获取个股最近的新闻资讯（来源：东方财富），返回标题/时间/摘要"""
@@ -337,6 +518,7 @@ def tool_news_search(symbol: str, top_k: int = 5) -> str:
 
 # ── AkShare：同行业可比公司 ───────────────────────────────────────────────────
 
+@_with_cache()
 @_with_retry()
 def tool_industry_peers(symbol: str, top_k: int = 10) -> str:
     """查询个股所属行业及行业内主要成分股（按总市值排序），支持后续横向对比"""
