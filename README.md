@@ -104,6 +104,12 @@ stock-agent/
 │   └── bge-small-zh-v1.5/        # 本地 embedding 模型（备用）
 ├── evaluation/
 │   └── compare_result.json       # 对比评估结果示例
+├── gateway/                      # LLM 网关（LiteLLM Proxy，可选）
+│   ├── config.yaml               #   模型路由配置（纯 ASCII：LiteLLM 按 GBK 读取）
+│   ├── requirements.txt          #   网关独立依赖（litellm[proxy]）
+│   ├── start-gateway.ps1         #   一键启动（免 PATH/幂等/直连 DashScope）
+│   └── README.md                 #   启动/验证/演进路线
+│   # master key 存 gateway/.master_key（运行时生成，git-ignored，勿提交）
 ├── reports/                      # 自动生成的研报（运行时创建）
 ├── index.html                    # Web UI（流式展示每步循环）
 ├── requirements.txt
@@ -245,6 +251,73 @@ print(TOOLS_MAP["news_search"](symbol="600519", top_k=5))
 print(TOOLS_MAP["industry_peers"](symbol="600519"))
 ```
 
+### 5. 走 LLM 网关（可选）
+
+仓库自带 LiteLLM Proxy 网关（`gateway/`）。所有 LLM/embedding 流量经统一 OpenAI 兼容入口：
+上游 Key 只配在网关进程，业务侧只拿一把 master key，且换模型/加备援只改 YAML——
+业务代码零改动。指标、成本明细与进阶玩法（虚拟 Key/预算）见 `gateway/README.md`。
+
+```mermaid
+flowchart TB
+    subgraph APP["业务侧（零代码改动）"]
+        CLI["CLI agent.py"]
+        WEB["Web serve.py / SSE"]
+        SDK["OpenAI SDK ×3 处调用点"]
+        CLI --> SDK
+        WEB --> SDK
+    end
+
+    subgraph GW["LiteLLM 网关 :4000（gateway/）"]
+        CFG["config.yaml 同名 alias 路由<br/>qwen3.8-max / text-embedding-v3"]
+        AUTH["master key 鉴权<br/>gateway/.master_key（git-ignored）"]
+        CFG --> AUTH
+    end
+
+    subgraph UP["DashScope 上游（DASHSCOPE_API_KEY 仅网关进程）"]
+        CHAT["chat：dashscope/qwen3.8-max"]
+        EMB["embeddings：text-embedding-v3<br/>1024 维 ↔ vectorstore/ FAISS 硬约束"]
+    end
+
+    SDK -->|"AGENT_BASE_URL=http://localhost:4000/v1<br/>AGENT_API_KEY=master key"| GW
+    GW -->|"NO_PROXY 直连，绕系统代理"| UP
+    SDK -.->|"不设变量 = 原生直连，双路径并存"| UP
+```
+
+```powershell
+# 安装（首次）
+D:\projects\stock-agent\.venv\Scripts\pip.exe install -r gateway\requirements.txt
+
+# 一键启动（推荐）：自动定位 venv 里的 litellm.exe、生成/复用 master key（gateway\.master_key）、
+# 跳过启动期联网拉取模型成本表、直连 DashScope 绕过系统代理；幂等（4000 已监听则提示退出）
+powershell -ExecutionPolicy Bypass -File gateway\start-gateway.ps1
+
+# 业务侧切换到网关（在仓库根执行；模型名不变，AGENT_API_KEY 抄 gateway\.master_key）
+# 注意：这两段命令的相对路径都按「仓库根」写。你换到别的目录时，
+# .master_key 的路径要相应调整（如在 gateway/ 内则写作 .master_key）。
+$env:AGENT_BASE_URL           = "http://localhost:4000/v1"
+$env:AGENT_API_KEY            = (Get-Content gateway\.master_key -Raw).Trim()
+$env:AGENT_EMBEDDING_BASE_URL = "http://localhost:4000/v1"
+$env:AGENT_MODEL              = "qwen3.8-max"
+
+cd src
+python agent.py --mode manual --question "茅台2023年毛利率"
+```
+
+为什么别用裸 `litellm` 命令：它装在 `.venv\Scripts\` 下，不激活 venv 就不在 PATH——
+新开终端直接敲 `litellm` 没有任何反应。手动等价方式（在 `gateway/` 目录内）：
+`& ..\.venv\Scripts\litellm.exe --config config.yaml --port 4000`。
+
+⚠️ 硬约束：`vectorstore/` 的 FAISS 索引是 DashScope `text-embedding-v3`（1024 维）建的，
+网关 embedding 路由必须保持 `dashscope/text-embedding-v3` 同名 alias，换模型即报
+`assert d == self.d`。
+
+不设上述变量则完全保持原有直连 DashScope 行为，两条路径可并存随时切换。
+
+网关还有自带管理页：运行中打开 `http://localhost:4000/ui`（用户名 `admin`、密码 =
+`gateway\.master_key` 的值）。⚠️ UI 登录需要连接 PostgreSQL——无 DB 时会报
+`Authentication Error, Not connected to DB!`；无 DB 下用根路径 Swagger（`http://localhost:4000/`）、
+`/health`、`/metrics` 观察。接 PG 及虚拟 Key 等进阶功能详见 `gateway/README.md`。
+
 ## 两种实现对比
 
 | 维度 | 手写 Prompt 解析 | Function Calling API |
@@ -322,6 +395,13 @@ A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 
 本项目用于学习 Agent 技术范式与工程实践，数据来源于 AkShare 公开接口及公开年报，不构成投资建议。
 
 ## 变更记录
+
+### v2.3（2026-10-26）
+
+- **LLM 网关（LiteLLM Proxy）**：全部 LLM/embedding 流量收敛到 OpenAI 兼容统一入口；上游 Key 只配在网关进程，业务侧仅凭 `AGENT_*` 环境变量接入（零代码改动）；embedding 路由硬约束保持 `dashscope/text-embedding-v3`（1024 维）同名 alias
+- 新增 `gateway/`：`config.yaml`（配置即代码）、独立 requirements、启动/验证文档、网关架构图
+- 一键启动脚本 `start-gateway.ps1`：venv 绝对路径启动（裸 `litellm` 不在 PATH）、master key 持久化至 `gateway/.master_key`（git-ignored）、`LITELLM_LOCAL_MODEL_COST_MAP` 跳过启动期联网拉成本表、`NO_PROXY` 直连 DashScope（系统代理抖动实测会拦出站）、4000 已监听则幂等退出
+- README 快速开始新增「走 LLM 网关（可选）」小节与端到端 Mermaid 架构图；`AGENTS.md` 与 `gateway/README.md` 记录三类实测坑：LiteLLM 按 GBK 读 YAML（配置必须纯 ASCII）、PowerShell 5.1 用 GBK 解析无 BOM 的 ps1（脚本注释必须 ASCII）、Admin UI 登录必须 PostgreSQL（无 DB 时正确密码也报 `Not connected to DB!`）
 
 ### v2.2（2026-10-25）
 

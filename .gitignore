@@ -15,6 +15,7 @@ env/
 .env
 .env.local
 *.key
+gateway/.master_key
 
 # Logs & temp
 *.log

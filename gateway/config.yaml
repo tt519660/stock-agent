@@ -1,0 +1,44 @@
+# == LiteLLM Proxy gateway config =============================================
+# NOTE: must stay pure ASCII -- LiteLLM reads this file with the system default
+# encoding on Windows (GBK on zh-CN hosts); non-ASCII comments crash startup.
+#
+# Start (see README.md of this folder):
+#   $env:DASHSCOPE_API_KEY  = "sk-xxx"   # upstream DashScope, gateway process only
+#   $env:LITELLM_MASTER_KEY = "sk-xxx"   # business-side credential
+#   litellm --config config.yaml --port 4000
+#
+# Agent side (zero code change, repo already reads AGENT_* env vars):
+#   AGENT_BASE_URL             = http://localhost:4000/v1
+#   AGENT_API_KEY              = LITELLM_MASTER_KEY
+#   AGENT_EMBEDDING_BASE_URL   = http://localhost:4000/v1
+#   AGENT_MODEL                = qwen3.8-max  (unchanged)
+
+model_list:
+  # Chat model: model_name matches the repo default AGENT_MODEL 1:1, so the
+  # agent side is completely unaware a gateway exists.
+  - model_name: qwen3.8-max
+    litellm_params:
+      model: dashscope/qwen3.8-max
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+  # RAG embedding: HARD CONSTRAINT -- must match the FAISS index in vectorstore/
+  # (DashScope text-embedding-v3, 1024-dim). Changing the model or dimension
+  # breaks rag_search with `assert d == self.d`.
+  - model_name: text-embedding-v3
+    litellm_params:
+      model: dashscope/text-embedding-v3
+      api_key: os.environ/DASHSCOPE_API_KEY
+
+general_settings:
+  # Lightweight no-DB mode: master key check only. Virtual keys / team budgets
+  # additionally require PostgreSQL + database_url.
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+# Optional: DeepSeek official endpoint as backup. Two entries sharing the same
+# model_name form an availability group; Router retries the next deployment on
+# upstream failure (arrears / rate limit).
+#   - model_name: qwen3.8-max
+#     litellm_params:
+#       model: openai/deepseek-chat
+#       api_key: os.environ/DEEPSEEK_API_KEY
+#       base_url: https://api.deepseek.com/v1
