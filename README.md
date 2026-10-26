@@ -1,11 +1,11 @@
 # stock-agent
 
-以 A 股金融分析为真实场景的 **ReAct（Reasoning + Acting）Agent 参考**：
+以 A 股金融分析为真实场景的 **ReAct（Reasoning + Acting）Agent **：
 LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成财务对比、
 年报深度检索、股价与技术面分析、舆情追踪、行业横向对比等任务，
 最终自动产出一份结构化 Markdown 研报。
 
-**为什么值得读这个仓库** —— 一个刻意"不用框架"的 Agent 教学参考工程：
+**为什么值得读这个仓库** —— 一个刻意"不用框架"的 Agent 工程：
 
 - 🧠 **双实现可对照学习**：同一套工具、同一份评估脚本，跑两种推理范式——
   手写 Prompt 解析版（Thought/Action 格式约束 + 正则解析，模型每步"想了什么"完全透明）
