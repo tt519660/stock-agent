@@ -1,6 +1,6 @@
 # stock-agent
 
-以 A 股金融分析为真实场景的 **ReAct（Reasoning + Acting）Agent **：
+以 A 股金融分析为真实场景的 **ReAct（Reasoning + Acting）Agent**：
 LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成财务对比、
 年报深度检索、股价与技术面分析、舆情追踪、行业横向对比等任务，
 最终自动产出一份结构化 Markdown 研报。
@@ -40,7 +40,7 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
   | `calculator` | 受限 Python eval | 四则运算、百分比、CAGR |
   | `image_analysis` | DashScope qwen3-vl-plus（视觉模型） | 图片理解：K线图形态、财务图表、截图文字（URL 或本地路径） |
   | `price_chart` | AkShare + matplotlib | 区间收盘价走势 PNG（含 MA20），研报自动嵌图 |
-- **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格（含每步耗时）/ 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
+- **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格（含每步耗时）/ 图表（本轮调用过 price_chart 时自动嵌图）/ 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
 - **Web UI（DeepSeek 风格思考抽屉）**：运行中实时展开推理步骤、结束后自动收起只留结论；支持随时 ⏹ 停止打断；每步显示耗时
 - 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
@@ -83,7 +83,7 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
 │  ┢financial_indicator…AkShare│      │  evaluate.py 双实现对比       │
 │  ┢stock_price·technical·news │      │  report.py  Markdown 研报    │
 │  ┢industry_peers             │      └─────────────────────────────┘
-│  ┢image_analysis   视觉模型   │
+│  ┢image_analysis  视觉模型    │
 │  ┢price_chart     走势出图    │
 └────────────────────────────┘
 ```
@@ -118,6 +118,7 @@ stock-agent/
 ├── reports/                      # 自动生成的研报与走势图 charts/（运行时创建）
 ├── uploads/                      # Web 上传的待分析图片（运行时创建，git-ignored）
 ├── index.html                    # Web UI（流式展示每步循环）
+├── AGENTS.md                     # Agent 协作约定（工具层/缓存/网关/多模态坑点）
 ├── requirements.txt
 ├── .gitignore
 └── README.md
@@ -153,7 +154,7 @@ $env:AGENT_BASE_URL = "https://api.deepseek.com/v1" # 服务商的 OpenAI 兼容
 $env:AGENT_MODEL    = "deepseek-chat"
 ```
 
-> 已知错误码 `Arrearage`（400）表示 DashScope 账户欠费，服务端会以友好文案提示到 Web UI；充值后即可恢复。
+> 已知错误码 `Arrearage`（400）表示 DashScope 账户欠费、`403 Free quota exhausted` 表示该模型免费额度用尽，服务端会以友好文案提示到 Web UI；充值或等待额度刷新后即可恢复。
 
 ### 3. 命令行运行
 
@@ -217,7 +218,7 @@ cd stock-agent/src
 uvicorn serve:app --host 0.0.0.0 --port 8000
 ```
 
-访问 http://localhost:8000 。
+访问 http://localhost:8000。
 
 **Web UI 交互（DeepSeek 风格）：**
 
@@ -265,6 +266,8 @@ print(TOOLS_MAP["stock_price"](symbol="600519", start_date="20230101", end_date=
 print(TOOLS_MAP["technical_indicator"](symbol="600519"))
 print(TOOLS_MAP["news_search"](symbol="600519", top_k=5))
 print(TOOLS_MAP["industry_peers"](symbol="600519"))
+print(TOOLS_MAP["image_analysis"](image=r"D:\kline.png", question="图中走势形态如何？"))
+print(TOOLS_MAP["price_chart"](symbol="600519", start_date="20260801", end_date="20261031"))
 ```
 
 ### 5. 走 LLM 网关（可选）
@@ -284,7 +287,7 @@ flowchart TB
     end
 
     subgraph GW["LiteLLM 网关 :4000（gateway/）"]
-        CFG["config.yaml 同名 alias 路由<br/>qwen3.8-max / text-embedding-v3"]
+        CFG["config.yaml 同名 alias 路由<br/>qwen3.8-max / text-embedding-v3 / vl-model"]
         AUTH["master key 鉴权<br/>gateway/.master_key（git-ignored）"]
         CFG --> AUTH
     end
@@ -292,6 +295,7 @@ flowchart TB
     subgraph UP["DashScope 上游（DASHSCOPE_API_KEY 仅网关进程）"]
         CHAT["chat：dashscope/qwen3.8-max"]
         EMB["embeddings：text-embedding-v3<br/>1024 维 ↔ vectorstore/ FAISS 硬约束"]
+        VL["vision：dashscope/qwen3-vl-plus<br/>（image_analysis 工具用）"]
     end
 
     SDK -->|"AGENT_BASE_URL=http://localhost:4000/v1<br/>AGENT_API_KEY=master key"| GW
@@ -372,7 +376,7 @@ for step in fc_run("宁德时代2023年营收？"):
     ...
 ```
 
-单个工具的同构接口调用方式见上文「快速开始」第 3 节。
+单个工具的同构接口调用方式见上文「快速开始」中的「工具单独调用」示例。
 
 ## FAQ
 
@@ -380,13 +384,13 @@ for step in fc_run("宁德时代2023年营收？"):
 A：Embedding 维度不匹配。索引由 DashScope `text-embedding-v3`（1024 维）构建，确认 `DASHSCOPE_API_KEY` 已设置，查询向量同样来自该 API。
 
 **Q：`financial_indicator` 很慢（20 秒以上）**
-A：正常，AkShare `stock_financial_abstract` 需拉取历史财务数据。可用类似接力缓存的思路优化同一公司多次调用。
+A：正常，AkShare `stock_financial_abstract` 需拉取历史财务数据。v2.2 起已有 1h TTL 缓存，同一公司重复调用瞬时返回。
 
 **Q：手写版某步 Thought 为空**
 A：正常现象，部分模型在中间步骤会省略 Thought 直接输出 Action，解析器已容忍，不影响循环执行。
 
 **Q：想换 DeepSeek-V3**
-A：修改环境变量 `AGENT_MODEL="deepseek-v3"`；若走 DeepSeek 官方接口，将 `tools.py` 与 `react_manual.py` 中的 `base_url` 改为 `https://api.deepseek.com/v1`。
+A：不用改任何代码——设环境变量即可：`AGENT_API_KEY`（DeepSeek 的 key）+ `AGENT_BASE_URL=https://api.deepseek.com/v1` + `AGENT_MODEL=deepseek-chat`（三处调用点全部读取，见「快速开始」第 2 节）。若已走 LiteLLM 网关，则只改 `gateway/config.yaml` 加同名 alias（参考文件末尾 DeepSeek 备援注释模板），业务侧零改动。
 
 **Q：工具返回"系统代理和直连均不可用"**
 A：本机系统代理抖动或断网。工具会自动重试并在代理失效时直连兜底，仍失败则稍后重试；长期如此请检查系统代理设置（控制面板 → Internet 选项 → 连接）。
@@ -402,6 +406,9 @@ A：会——这是缓存换取速度的固有代价。TTL 按数据新鲜度设
 
 **Q：出现 "连接 LLM 服务超时" 或 TLS 握手超时？**
 A：这是系统代理（127.0.0.1 类本地代理）不稳定导致的。v2.2 起所有 LLM/embedding 请求默认**绕过系统代理直连** DashScope（国内端点，无需代理），并内置一次自动重试。若你使用的是需要代理的境外端点（如 OpenAI API），设置 `AGENT_TRUST_SYSTEM_PROXY=1` 改回走代理。
+
+**Q：`image_analysis` 报 `400 No connected db.`（走网关时）**
+A：LiteLLM 网关无 DB 轻量模式只认 master key——业务侧进程未把 `AGENT_API_KEY` 设为 `gateway/.master_key` 的值时，请求带的是 DashScope 原生 key，会被网关拒绝。按「快速开始」第 5 节设置环境变量即可（uvicorn 服务同理，启动前先设好）。
 
 **Q：Web UI 显示"请求失败"**
 A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 确认服务状态。
