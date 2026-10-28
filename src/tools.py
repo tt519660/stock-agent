@@ -1,8 +1,8 @@
 """
-8个工具的统一实现，供 ReAct Agent 调用
+10个工具的统一实现，供 ReAct Agent 调用
 
 教学重点：
-  1. 工具异构性：语义检索 / 结构化数据 / 实时行情 / 技术指标 / 新闻 / 行业成分 / 计算 / 静态映射
+  1. 工具异构性：语义检索 / 结构化数据 / 实时行情 / 技术指标 / 新闻 / 行业成分 / 计算 / 静态映射 / 图像理解 / 图表绘制
   2. 每个工具返回统一格式的字符串，便于 LLM 消费
   3. 所有网络请求做异常保护，降级返回错误描述而非抛出
 
@@ -15,9 +15,15 @@
   需要设置 DASHSCOPE_API_KEY 环境变量。
   6 个网络型工具带进程内 TTL+LRU 缓存（_CACHE_TTL 可调）；
   环境变量 TOOL_CACHE_DISABLE=1 可完全旁路，clear_cache()/cache_stats() 供运维接口使用。
+
+多模态（v2.4）：
+  image_analysis 走独立 VL 客户端（AGENT_VL_BASE_URL/AGENT_VL_MODEL，
+  默认经 LiteLLM 网关 vl-model 别名调用 dashscope/qwen3-vl-plus）；
+  price_chart 用 matplotlib 直接出 PNG（reports/charts/）。
 """
 
 import os
+import base64
 import json
 import math
 import time
@@ -87,6 +93,8 @@ _CACHE_TTL = {   # 各工具缓存时长（秒），按数据新鲜度设定
     "technical_indicator": 600,
     "news_search":         300,   # 资讯更新最频繁
     "industry_peers":      3600,  # 成分股月级变化
+    "image_analysis":      3600,  # 同一图片短期内内容不变
+    "price_chart":         900,   # 与 stock_price 行情一致
 }
 
 _CACHE_MAX_ENTRIES = 256          # LRU 容量上限（约 16MB 内存封顶）
@@ -570,6 +578,129 @@ def tool_industry_peers(symbol: str, top_k: int = 10) -> str:
         return f"industry_peers 执行出错: {e}"
 
 
+# ── 多模态：图像理解（独立视觉模型客户端） ─────────────────────────────────────
+# 主推理模型（qwen3.8-max）为纯文本模型，图像分析走独立 VL 客户端。
+# 默认经 LiteLLM 网关（vl-model 别名 → dashscope/qwen3-vl-plus）；
+# 直连方式：AGENT_VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+#          AGENT_VL_MODEL=qwen3-vl-plus
+# 网络策略同 _build_client()：默认绕过系统代理直连。
+
+def _build_vl_client():
+    try:
+        import httpx
+    except ModuleNotFoundError:   # 本环境使用 httpx 分支包
+        import httpx2 as httpx
+    trust = os.getenv("AGENT_TRUST_SYSTEM_PROXY", "0") == "1"
+    return OpenAI(
+        api_key=os.getenv("AGENT_VL_API_KEY")
+                or os.getenv("AGENT_API_KEY") or os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv("AGENT_VL_BASE_URL", "http://localhost:4000/v1"),
+        http_client=httpx.Client(trust_env=trust, timeout=120.0),
+    )
+
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}
+_IMAGE_MAX_BYTES = 10 * 1024 * 1024   # 10MB
+
+def _image_to_data_url(image: str) -> str:
+    """http(s) URL 原样透传；本地文件校验（存在/格式/大小）后转 base64 data URI"""
+    if image.lower().startswith(("http://", "https://")):
+        return image
+    p = Path(image)
+    if not p.is_file():
+        raise FileNotFoundError(f"图片文件不存在: {image}")
+    if p.suffix.lower() not in _IMAGE_EXTS:
+        raise ValueError(f"不支持的图片格式: {p.suffix}（支持 {', '.join(sorted(_IMAGE_EXTS))}）")
+    if p.stat().st_size > _IMAGE_MAX_BYTES:
+        raise ValueError(f"图片超过 {_IMAGE_MAX_BYTES // 1024 // 1024}MB 上限")
+    suffix = p.suffix.lower().lstrip(".")
+    mime = "jpeg" if suffix == "jpg" else suffix
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:image/{mime};base64,{b64}"
+
+
+@_with_cache()
+@_with_retry()
+def tool_image_analysis(image: str, question: str = "描述这张图片的主要内容") -> str:
+    """
+    用视觉大模型（qwen3-vl）分析图片，返回文本描述
+    image: 图片 URL（http/https）或本地路径（自动 base64 编码上传）
+    典型用途：K线图形态解读、财务图表数据识别、截图文字提取
+    """
+    try:
+        client = _build_vl_client()
+        resp = client.chat.completions.create(
+            model=os.getenv("AGENT_VL_MODEL", "vl-model"),
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": _image_to_data_url(image)}},
+                    {"type": "text", "text": question},
+                ],
+            }],
+            temperature=0,
+        )
+        return resp.choices[0].message.content.strip() or "（模型未返回内容）"
+    except Exception as e:
+        return f"image_analysis 执行出错: {e}"
+
+
+# ── 多模态输出：行情走势图（matplotlib 直出 PNG） ─────────────────────────────
+CHART_DIR = BASE_DIR / "reports" / "charts"
+
+@_with_cache()
+@_with_retry()
+def tool_price_chart(symbol: str, start_date: str, end_date: str) -> str:
+    """
+    抓取区间历史行情并绘制收盘价走势 PNG（含MA20），保存到 reports/charts/
+    返回图片相对路径，研报可引用嵌入；日期格式：YYYYMMDD
+    用户要求"画图/可视化走势"时调用本工具（而非 stock_price）
+    """
+    try:
+        import akshare as ak
+        import matplotlib
+        matplotlib.use("Agg")   # 无界面后端，必须在 pyplot 之前
+        import matplotlib.pyplot as plt
+        plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei"]   # Windows 中文字体
+        plt.rcParams["axes.unicode_minus"] = False
+
+        df = ak.stock_zh_a_hist(symbol=symbol, period="daily",
+                                start_date=start_date, end_date=end_date, adjust="qfq")
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 在 {start_date}~{end_date} 的行情数据，无法绘图"
+
+        dates = df["日期"].astype(str).tolist()
+        close = df["收盘"].astype(float).tolist()
+        ma20  = df["收盘"].astype(float).rolling(window=20, min_periods=1).mean().tolist()
+
+        CHART_DIR.mkdir(parents=True, exist_ok=True)
+        fname = f"price_{symbol}_{start_date}_{end_date}.png"
+        rel_path = (CHART_DIR / fname).relative_to(BASE_DIR).as_posix()
+
+        fig, ax = plt.subplots(figsize=(10, 5), dpi=110)
+        ax.plot(dates, close, color="#c0392b", linewidth=1.6, label="收盘价")
+        ax.plot(dates, ma20, color="#2c5fa8", linewidth=1.1, alpha=0.9, label="MA20")
+        ax.set_title(f"{symbol} 收盘价走势（{start_date}~{end_date}，前复权）")
+        ax.set_xlabel("日期")
+        ax.set_ylabel("价格（元）")
+        ax.grid(alpha=0.3)
+        ax.legend()
+        step = max(1, len(dates) // 10)
+        ticks = list(range(0, len(dates), step))
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([dates[i] for i in ticks], rotation=30, ha="right", fontsize=8)
+        fig.tight_layout()
+        fig.savefig(CHART_DIR / fname)
+        plt.close(fig)
+
+        chg = (close[-1] / close[0] - 1) * 100
+        return (f"走势图已生成: {rel_path}\n"
+                f"  交易日数: {len(dates)}，收盘价 {close[0]:.2f} -> {close[-1]:.2f} 元（{chg:+.2f}%）\n"
+                f"  图中含收盘价与MA20均线，可嵌入研报引用")
+    except Exception as e:
+        return f"price_chart 执行出错: {e}"
+
+
 # ── 统一工具注册表 ─────────────────────────────────────────────────────────────
 
 TOOLS_MAP: dict[str, Any] = {
@@ -581,6 +712,8 @@ TOOLS_MAP: dict[str, Any] = {
     "technical_indicator":  tool_technical_indicator,
     "news_search":          tool_news_search,
     "industry_peers":       tool_industry_peers,
+    "image_analysis":       tool_image_analysis,
+    "price_chart":          tool_price_chart,
 }
 
 # Function Calling 版所需的 JSON Schema 描述
@@ -699,6 +832,37 @@ TOOLS_SCHEMA = [
                     "top_k":  {"type": "integer", "description": "返回成分股数量，默认10"},
                 },
                 "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "image_analysis",
+            "description": "用视觉大模型分析图片（K线图形态/财务图表/截图OCR）。用户提供图片路径或URL时，必须调用本工具查看图片内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string", "description": "图片URL（http/https）或本地文件路径，如'D:/kline.png'"},
+                    "question": {"type": "string", "description": "针对图片的分析问题，如'图中走势形态如何？是否出现金叉？'"},
+                },
+                "required": ["image"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "price_chart",
+            "description": "绘制A股区间收盘价走势PNG（含MA20均线），保存后返回图片路径，适合用户要求'画图/可视化走势'的场景",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol":     {"type": "string", "description": "股票代码，如'600519'"},
+                    "start_date": {"type": "string", "description": "起始日期，格式YYYYMMDD，如'20230101'"},
+                    "end_date":   {"type": "string", "description": "结束日期，格式YYYYMMDD，如'20231231'"},
+                },
+                "required": ["symbol", "start_date", "end_date"],
             },
         },
     },

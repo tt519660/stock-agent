@@ -15,8 +15,10 @@ YAML 配置即代码、MIT。
 flowchart LR
     REQ["Agent 请求<br/>Authorization: Bearer master_key"] --> R1["/v1/chat/completions<br/>→ dashscope/qwen3.8-max"]
     REQ --> R2["/v1/embeddings<br/>→ dashscope/text-embedding-v3<br/>（1024 维，与 FAISS 同源）"]
+    REQ --> R3["/v1/chat/completions（vision）<br/>→ dashscope/qwen3-vl-plus<br/>（vl-model，image_analysis 工具用）"]
     R1 --> CHAT["DashScope chat 上游"]
     R2 --> EMB["DashScope embeddings 上游"]
+    R3 --> VL["DashScope VL 上游"]
     BAK["config.yaml 注释模板：同名组 DeepSeek 备援<br/>上游故障自动切组内下一部署"] -.-> R1
     OBS["无 DB 可观测面：<br/>Swagger（根路径）/ /health / /metrics<br/>Admin UI /ui 需 PostgreSQL"]
 ```
@@ -26,6 +28,12 @@ flowchart LR
 `vectorstore/` 的 FAISS 索引由 DashScope `text-embedding-v3`（1024 维）构建。
 `rag_search` 的 embedding 路由**必须**是 `dashscope/text-embedding-v3`
 的同名 alias —— 换任何其他 embedding 模型都会报 `assert d == self.d`。
+
+多模态（v2.4）：`vl-model` alias → `dashscope/qwen3-vl-plus`，供
+`image_analysis` 工具分析用户图片（本地图 base64 data URI / URL 透传），
+不属硬约束，可按需换 VL 型号。**注意：无 DB 模式只认 master key**——
+带其他 Bearer 的请求报 `400 No connected db.`（src 侧进程把
+`AGENT_API_KEY` 设为 `.master_key` 即可，VL 客户端复用同一凭据）。
 
 ## 安装与启动
 
@@ -102,6 +110,12 @@ c = OpenAI(base_url='http://localhost:4000/v1', api_key=open('.master_key').read
 r = c.embeddings.create(model='text-embedding-v3', input='测试')
 assert len(r.data[0].embedding) == 1024, len(r.data[0].embedding)
 print('embedding dim ok: 1024')"
+
+# 3) 视觉模型 sanity check（v2.4，image_analysis 工具同路径）
+# r = c.chat.completions.create(model='vl-model', messages=[{
+#     "role": "user",
+#     "content": [{"type": "image_url", "image_url": {"url": "https://..."}},
+#                 {"type": "text", "text": "图里是什么？"}]}])
 ```
 
 ## 演进路线

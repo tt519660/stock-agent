@@ -4,3 +4,5 @@ akshare>=1.10.0
 fastapi>=0.110.0
 uvicorn>=0.29.0
 numpy>=1.24.0
+matplotlib>=3.8.0
+python-multipart>=0.0.9

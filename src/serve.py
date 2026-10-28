@@ -4,6 +4,7 @@ FastAPI HTTP 服务，提供流式 SSE 接口给 Web UI
 接口：
   POST /query/manual  - 手写版 ReAct，流式返回每步
   POST /query/fc      - Function Calling 版，流式返回每步
+  POST /upload        - 上传图片（多模态），保存到 uploads/ 并返回本地路径
   GET  /health        - 健康检查
 
 使用方式：
@@ -21,7 +22,7 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -71,6 +72,13 @@ class QueryRequest(BaseModel):
     question:   str
     max_steps:  int = 10
     session_id: str | None = None  # 不传则开启新会话
+    images:     list[str] | None = None  # 附带图片（URL 或 /upload 返回的本地路径）
+
+
+# ── 图片上传（多模态） ────────────────────────────────────────────────────────
+UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
+_UPLOAD_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"}
+_UPLOAD_MAX_BYTES = 10 * 1024 * 1024   # 与 tools._IMAGE_MAX_BYTES 一致
 
 
 # ── SSE 流式生成器 ────────────────────────────────────────────────────────────
@@ -95,7 +103,8 @@ def _friendly_llm_error(e: Exception) -> str:
 
 
 async def _stream_react(question: str, max_steps: int, mode: str,
-                         session_id: str | None = None):
+                         session_id: str | None = None,
+                         images: list[str] | None = None):
     """
     同步生成器（react_run）在独立线程中逐步执行，
     每产出一步通过 asyncio.Queue 传递给异步 SSE 生成器，
@@ -103,6 +112,13 @@ async def _stream_react(question: str, max_steps: int, mode: str,
 
     支持 session_id：同一会话的多轮对话累积短期记忆。
     """
+    # 附图注入：把图片路径/URL 写进问题文本，Agent 自主调用 image_analysis（引擎零改动）
+    if images:
+        lines = [f"[用户附带图片: {img}]" for img in images]
+        question = (f"{question}\n\n"
+                    f"用户本次附带图片，请先用 image_analysis 工具查看后再分析：\n"
+                    + "\n".join(lines))
+
     if mode == "manual":
         from react_manual import run as react_run
     else:
@@ -223,7 +239,7 @@ async def _stream_react(question: str, max_steps: int, mode: str,
 async def query_manual(req: QueryRequest):
     return StreamingResponse(
         _stream_react(req.question, req.max_steps, "manual",
-                       session_id=req.session_id),
+                      session_id=req.session_id, images=req.images),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -233,10 +249,31 @@ async def query_manual(req: QueryRequest):
 async def query_fc(req: QueryRequest):
     return StreamingResponse(
         _stream_react(req.question, req.max_steps, "fc",
-                       session_id=req.session_id),
+                      session_id=req.session_id, images=req.images),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    """保存图片到 uploads/（随机名防冲突），返回绝对路径供前端放进 images 字段"""
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in _UPLOAD_EXTS:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的图片格式: {suffix or '(无后缀)'}")
+    data = await file.read()
+    if len(data) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="图片超过 10MB 上限")
+    try:
+        UPLOAD_DIR.mkdir(exist_ok=True)
+        name = f"{uuid.uuid4().hex[:12]}{suffix}"
+        path = UPLOAD_DIR / name
+        path.write_bytes(data)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"图片保存失败: {e}")
+    logger.info(f"图片已上传: {path.name}（{len(data) / 1024:.0f} KB）")
+    return {"path": str(path.resolve()), "name": file.filename}
 
 
 @app.get("/health")

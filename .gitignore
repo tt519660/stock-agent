@@ -21,6 +21,7 @@ gateway/.master_key
 *.log
 .cache/
 reports/
+uploads/
 
 # IDE
 .idea/

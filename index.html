@@ -129,6 +129,44 @@
     50% { opacity: 0.75; }
   }
 
+  /* ── 附图上传（多模态） ── */
+  .upload-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .upload-btn {
+    display: inline-block;
+    background: #e8eaee;
+    border: 1px dashed #b9bfc8;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: #475569;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .upload-btn:hover { border-color: #5c68d8; color: #5c68d8; }
+  .img-chip {
+    display: inline-flex;
+    align-items: center;
+    background: #e8eaee;
+    border: 1px solid #d8dbdf;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: #475569;
+    cursor: pointer;
+    max-width: 260px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .img-chip:hover { border-color: #ef4444; color: #ef4444; }
+
   /* ── 示例问题 ── */
   .examples { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px; }
   .example-chip {
@@ -399,6 +437,11 @@
       <textarea id="question" placeholder="输入问题，例如：贵州茅台和五粮液2023年的毛利率哪家更高？"></textarea>
       <button class="send-btn" id="sendBtn" onclick="onSendOrStopClick()">发 送</button>
     </div>
+    <div class="upload-row">
+      <label class="upload-btn" for="imageInput" title="支持 png/jpg/webp/bmp/gif，可多选，单张≤10MB">🖼 附图（可多选）</label>
+      <input type="file" id="imageInput" accept=".png,.jpg,.jpeg,.bmp,.webp,.gif" multiple hidden />
+      <div id="imgPreviews" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+    </div>
     <div class="examples">
       <span style="font-size:12px;color:#475569;margin-right:4px;">示例：</span>
       <span class="example-chip" onclick="setQuestion(this.textContent)">茅台和五粮液2023年毛利率差多少个百分点？</span>
@@ -437,6 +480,7 @@
   let isRunning   = false;
   let currentQueryId = null;
   let currentAbort   = null;
+  let pendingImages  = [];   // 已上传待发送的图片 [{path, name}]（多模态）
 
   function setMode(mode, btn) {
     currentMode = mode;
@@ -447,6 +491,46 @@
   function setQuestion(text) {
     document.getElementById('question').value = text;
   }
+
+  // ── 附图上传（多模态） ────────────────────────────────────────────────────
+  async function onImagesChosen(fileList) {
+    for (const f of fileList) {
+      const fd = new FormData();
+      fd.append('file', f);
+      setStatus(`正在上传图片 ${f.name} ...`, true);
+      try {
+        const resp = await fetch('/upload', { method: 'POST', body: fd });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        pendingImages.push(data);
+        renderPreviews();
+      } catch (e) {
+        alert(`图片上传失败: ${e.message}`);
+      }
+    }
+    setStatus('', false);
+  }
+
+  function renderPreviews() {
+    const box = document.getElementById('imgPreviews');
+    box.innerHTML = '';
+    pendingImages.forEach((img, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'img-chip';
+      chip.title = '点击移除';
+      chip.textContent = `🖼 ${img.name} ×`;
+      chip.onclick = () => { pendingImages.splice(i, 1); renderPreviews(); };
+      box.appendChild(chip);
+    });
+  }
+
+  document.getElementById('imageInput').addEventListener('change', (e) => {
+    onImagesChosen([...e.target.files]);
+    e.target.value = '';   // 允许重复选择同一文件
+  });
 
   function setStatus(text, visible) {
     const bar = document.getElementById('statusBar');
@@ -603,8 +687,9 @@
   // ── 主发送逻辑 ────────────────────────────────────────────────────────────
   async function sendQuery() {
     if (isRunning) return;
-    const question = document.getElementById('question').value.trim();
-    if (!question) return;
+    let question = document.getElementById('question').value.trim();
+    if (!question && !pendingImages.length) return;
+    if (!question) question = '请分析我附带的图片内容';
 
     // 清空上次结果，重建思考抽屉（DeepSeek 风格 A：运行中默认展开）
     let finalCardEl = null;
@@ -620,16 +705,23 @@
     try {
       currentQueryId = null;
       currentAbort = new AbortController();
+      const payload = { question, max_steps: 10 };
+      if (pendingImages.length) payload.images = pendingImages.map(i => i.path);
+
       const resp = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question, max_steps: 10 }),
+        body: JSON.stringify(payload),
         signal: currentAbort.signal,
       });
 
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}`);
       }
+
+      // 发送成功后清空待发附图列表
+      pendingImages = [];
+      document.getElementById('imgPreviews').innerHTML = '';
 
       const reader  = resp.body.getReader();
       const decoder = new TextDecoder();

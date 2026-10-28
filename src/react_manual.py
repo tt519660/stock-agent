@@ -89,6 +89,8 @@ SYSTEM_PROMPT = """你是一个专业的A股金融分析助手，可以使用以
 6. technical_indicator(symbol) - 获取技术指标（均线MA/RSI/MACD及金叉死叉信号）
 7. news_search(symbol, top_k) - 获取个股近期新闻资讯
 8. industry_peers(symbol, top_k) - 获取个股所属行业及行业内主要可比公司
+9. image_analysis(image, question) - 用视觉模型分析图片（URL或本地路径），如K线图形态解读、财务图表数据识别、截图文字提取
+10. price_chart(symbol, start_date, end_date) - 绘制区间收盘价走势PNG（含MA20）保存到本地并返回图片路径
 
 你必须严格按照以下格式交替输出，每次只能调用一个工具：
 
@@ -104,6 +106,7 @@ Final Answer: 完整的回答（含数据来源）
 规则：
 - 必须先用 company_lookup 获取股票代码，再调用 financial_indicator 或 stock_price
 - 数字计算必须用 calculator，不能心算
+- 用户提供了图片路径或URL时，必须先用 image_analysis 查看图片内容再分析；用户要求画走势图时，用 price_chart 生成
 - Final Answer 必须引用具体数据来源（哪份年报哪一页，或AkShare实时数据）
 - 如果没有合适工具能回答，直接输出 Final Answer 说明原因
 """

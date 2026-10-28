@@ -29,6 +29,14 @@ model_list:
       model: dashscope/text-embedding-v3
       api_key: os.environ/DASHSCOPE_API_KEY
 
+  # Vision model for the image_analysis tool (multimodal, v2.4).
+  # DashScope current-gen VL model; supports image_url (public URL or
+  # base64 data URI) in OpenAI-compatible messages.
+  - model_name: vl-model
+    litellm_params:
+      model: dashscope/qwen3-vl-plus
+      api_key: os.environ/DASHSCOPE_API_KEY
+
 general_settings:
   # Lightweight no-DB mode: master key check only. Virtual keys / team budgets
   # additionally require PostgreSQL + database_url.

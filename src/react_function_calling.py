@@ -75,6 +75,7 @@ FC_SYSTEM_PROMPT = """你是一个专业的A股金融分析助手。
 规则：
 - 调用 financial_indicator 或 stock_price 之前，必须先用 company_lookup 获取股票代码
 - 数字计算必须使用 calculator 工具，不能心算
+- 用户提供了图片路径或URL时，先用 image_analysis 查看图片；用户要求画走势图时，用 price_chart 生成
 - Final Answer 必须引用具体数据来源
 - 如果没有合适工具能回答，直接说明原因
 """

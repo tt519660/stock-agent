@@ -45,7 +45,31 @@ def _merge_tool_sources(steps: list[dict]) -> list[str]:
             sources.setdefault("新闻资讯", "AkShare stock_news_em（东方财富）")
         elif action in ("industry_peers",):
             sources.setdefault("行业成分", "AkShare stock_board_industry_cons_em（东方财富）")
+        elif action in ("image_analysis",):
+            sources.setdefault("图像理解", "DashScope qwen3-vl-plus 视觉模型（用户提供的图片）")
+        elif action in ("price_chart",):
+            sources.setdefault("走势图表", "AkShare stock_zh_a_hist + matplotlib（收盘价/MA20）")
     return [f"- **{k}**：{v}" for k, v in sources.items()] or ["- 本轮分析未调用外部数据工具"]
+
+
+_BASE_LIMITATIONS = [
+    "财务与行情数据存在披露延迟，可能与最新公告不一致",
+    "年报语义检索仅覆盖 5 家公司 2021-2023 年报，范围外的公司无法溯源",
+    "技术指标基于历史价格计算，对未来走势无预测能力",
+    "结论由 LLM 归纳生成，可能存在理解偏差，请交叉验证关键数字",
+]
+
+
+def _collect_chart_paths(steps: list[dict]) -> list[str]:
+    """从 price_chart 工具的 Observation 中提取图片相对路径（去重保序）"""
+    paths: list[str] = []
+    for s in steps:
+        if s.get("type") != "action" or s.get("action") != "price_chart":
+            continue
+        m = re.search(r"走势图已生成: (\S+\.png)", str(s.get("observation", "")))
+        if m and m.group(1) not in paths:
+            paths.append(m.group(1))
+    return paths
 
 
 def build_report_md(question: str, mode: str, model: str,
@@ -77,6 +101,19 @@ def build_report_md(question: str, mode: str, model: str,
     )
     sources = "\n".join(_merge_tool_sources(steps))
 
+    # 图表附录：本轮调用过 price_chart 时新增「三、图表」，后续章节顺延编号
+    chart_paths = _collect_chart_paths(steps)
+    limitations = list(_BASE_LIMITATIONS)
+    if chart_paths:
+        charts_md = "\n\n".join(f"![走势图 {i + 1}]({p})" for i, p in enumerate(chart_paths))
+        chart_block = f"## 三、图表\n\n{charts_md}\n\n---\n\n"
+        source_title, limit_title = "## 四、数据来源", "## 五、局限性说明"
+        limitations.insert(1, "走势图基于前复权收盘价与MA20均线，仅作可视化参考")
+    else:
+        chart_block = ""
+        source_title, limit_title = "## 三、数据来源", "## 四、局限性说明"
+    limit_md = "\n".join(f"- {item}" for item in limitations)
+
     return f"""# A股分析研报
 
 **研究问题**：{question}
@@ -97,18 +134,15 @@ def build_report_md(question: str, mode: str, model: str,
 
 ---
 
-## 三、数据来源
+{chart_block}{source_title}
 
 {sources}
 
 ---
 
-## 四、局限性说明
+{limit_title}
 
-- 财务与行情数据存在披露延迟，可能与最新公告不一致
-- 年报语义检索仅覆盖 {5} 家公司 2021-2023 年报，范围外的公司无法溯源
-- 技术指标基于历史价格计算，对未来走势无预测能力
-- 结论由 LLM 归纳生成，可能存在理解偏差，请交叉验证关键数字
+{limit_md}
 
 ---
 

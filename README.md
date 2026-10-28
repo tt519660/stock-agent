@@ -11,9 +11,10 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
   手写 Prompt 解析版（Thought/Action 格式约束 + 正则解析，模型每步"想了什么"完全透明）
   vs Function Calling 版（`tool_calls` API 原生能力，格式鲁棒性由 SDK 保证）。
   从第一行代码看清 Agent 循环本质，而非 LangChain/AutoGen 的框架黑箱
-- 🔌 **真实数据而非玩具数据**：8 个工具打通 4 类数据源——DashScope Embedding +
+- 🔌 **真实数据而非玩具数据**：10 个工具打通 4 类数据源——DashScope Embedding +
   FAISS 年报向量检索（5 家公司 2021-2023 年报、10353 条向量）、AkShare 实时财务
-  指标/行情/技术指标/新闻/行业成分、受限计算器、防幻觉公司映射
+  指标/行情/技术指标/新闻/行业成分、受限计算器、防幻觉公司映射，
+  外加多模态：视觉大模型读图（K线图/财务图表/截图）与 matplotlib 走势出图
 - 🛡️ **生产级健壮性**：区分 demo 与工程的正是这些不受欢迎的部分——
   网络异常 3 次重试 + 代理失效自动直连、工具结果 TTL 缓存（防击穿/错误不缓存/
   LRU 有界）、随时协作式打断（页面刷新级联取消）、LLM 欠费/限流/超时友好降级
@@ -26,7 +27,7 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
 ## 功能特性
 
 - ReAct 循环驱动（默认最多 10 步），支持 CLI 与 Web UI（SSE 流式展示每步推理）
-- **8 个异构工具**：
+- **10 个异构工具**：
   | 工具 | 数据来源 | 用途 |
   |------|---------|------|
   | `company_lookup` | 静态字典 | 公司名 → 股票代码，防幻觉 |
@@ -37,25 +38,27 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
   | `news_search` | AkShare（东方财富） | 个股近期新闻资讯 |
   | `industry_peers` | AkShare（东方财富） | 所属行业与行业内主要可比公司 |
   | `calculator` | 受限 Python eval | 四则运算、百分比、CAGR |
+  | `image_analysis` | DashScope qwen3-vl-plus（视觉模型） | 图片理解：K线图形态、财务图表、截图文字（URL 或本地路径） |
+  | `price_chart` | AkShare + matplotlib | 区间收盘价走势 PNG（含 MA20），研报自动嵌图 |
 - **自动研报**：每次分析结束后自动生成结构化 Markdown 研报（结论 / 推理链表格（含每步耗时）/ 数据来源 / 局限性），Web UI 一键下载，CLI 支持 `--save-report`
 - 同一 Agent、同一问题，工具组合路径因模型自主决策而不同，便于观察推理行为
 - **Web UI（DeepSeek 风格思考抽屉）**：运行中实时展开推理步骤、结束后自动收起只留结论；支持随时 ⏹ 停止打断；每步显示耗时
 - 网络异常自动重试：系统代理失效时自动直连兜底，对 LLM 返回简洁错误描述
 - **LLM/embedding 默认直连**：DashScope/DeepSeek 为国内端点，默认绕过系统代理（代理抖动是 TLS 握手超时的常见根源），`AGENT_TRUST_SYSTEM_PROXY=1` 可改回走代理；LLM 请求超时/断线自动重试一次
-- **工具结果缓存**：6 个网络型工具带进程内 TTL+LRU 缓存（财务指标 1h / 行情 15min / 新闻 5min），同轮重复调用瞬时返回（实测 1.5s → 0.1ms），并防缓存击穿、错误结果不缓存；`--no-cache` / `TOOL_CACHE_DISABLE=1` 可旁路
+- **工具结果缓存**：8 个网络型工具带进程内 TTL+LRU 缓存（财务指标 1h / 行情 15min / 新闻 5min），同轮重复调用瞬时返回（实测 1.5s → 0.1ms），并防缓存击穿、错误结果不缓存；`--no-cache` / `TOOL_CACHE_DISABLE=1` 可旁路
 
 ## 架构
 
 ```
 ┌─────────────────┐      ┌────────────────────────────────────┐
 │   CLI agent.py  │      │        Web UI  index.html          │
-│ --mode/fc/交互   │      │ 思考抽屉 · ⏹停止 · 每步耗时 · 研报导出 │
+│ --mode/fc/交互   │      │ 思考抽屉 · ⏹停止 · 每步耗时 · 🖼附图 │
 └────────┬────────┘      └──────────────┬─────────────────────┘
-         │ 函数级调用（同进程）            │ HTTP：SSE 流式 / 打断 / 缓存管理
+         │ 函数级调用（同进程）            │ HTTP：SSE 流式 / 打断 / 上传
          ▼                              ▼
 ┌───────────────── FastAPI  serve.py ──────────────────────────────┐
-│  接口: /query/{mode}(SSE)  /cancel/{qid}  /cache/stats|clear     │
-│        /report/{file}·latest  /health(含缓存状态)                 │
+│  接口: /query/{mode}(SSE)  /cancel/{qid}  /upload(图片)          │
+│        /cache/stats|clear  /report/{file}·latest  /health       │
 │                                                                  │
 │  ┌──────────────────  ReAct 引擎层  ───────────────────────┐     │
 │  │  react_manual.py  ·  react_function_calling.py          │     │
@@ -67,7 +70,7 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
 └──────────┬───────────────────────────────────────┬──────────────┘
            ▼                                       ▼
 ┌────────────────────────────┐      ┌─────────────────────────────┐
-│   tools.py  ：  8 个工具     │      │   LLM / Embedding 客户端      │
+│   tools.py  ： 10 个工具    │      │   LLM / Embedding 客户端      │
 │  调用链（自上而下）:          │      │   DashScope qwen3.8-max      │
 │   @_with_cache  TTL+LRU 缓存 │      │   trust_env=False 直连       │
 │   （命中=零网络·防击穿·       │      │   _llm_create 超时/断线重试   │
@@ -80,6 +83,8 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
 │  ┢financial_indicator…AkShare│      │  evaluate.py 双实现对比       │
 │  ┢stock_price·technical·news │      │  report.py  Markdown 研报    │
 │  ┢industry_peers             │      └─────────────────────────────┘
+│  ┢image_analysis   视觉模型   │
+│  ┢price_chart     走势出图    │
 └────────────────────────────┘
 ```
 
@@ -90,7 +95,7 @@ LLM 驱动 Thought → Action → Observation 循环，逐步调用工具完成�
 ```
 stock-agent/
 ├── src/
-│   ├── tools.py                  # 8 个工具实现 + 网络重试 + 进程内 TTL 缓存
+│   ├── tools.py                  # 10 个工具实现 + 网络重试 + 进程内 TTL 缓存
 │   ├── react_manual.py           # 手写 Prompt 解析版 ReAct
 │   ├── react_function_calling.py # Function Calling 版 ReAct
 │   ├── agent.py                  # 统一 CLI 入口（--mode manual/fc，--save-report）
@@ -110,7 +115,8 @@ stock-agent/
 │   ├── start-gateway.ps1         #   一键启动（免 PATH/幂等/直连 DashScope）
 │   └── README.md                 #   启动/验证/演进路线
 │   # master key 存 gateway/.master_key（运行时生成，git-ignored，勿提交）
-├── reports/                      # 自动生成的研报（运行时创建）
+├── reports/                      # 自动生成的研报与走势图 charts/（运行时创建）
+├── uploads/                      # Web 上传的待分析图片（运行时创建，git-ignored）
 ├── index.html                    # Web UI（流式展示每步循环）
 ├── requirements.txt
 ├── .gitignore
@@ -169,6 +175,12 @@ python agent.py --mode manual --question "..." --save-report
 # 禁用工具缓存（全部走真实网络请求）
 python agent.py --mode manual --question "..." --no-cache
 
+# 多模态：附图分析（视觉工具 image_analysis，--image 可多次）
+python agent.py --mode fc --question "解读这张图的形态与信号" --image D:\kline.png
+
+# 出图：让 Agent 画走势图（price_chart，PNG 存 reports/charts/，研报自动嵌图）
+python agent.py --mode manual --question "画出茅台2026年8月以来收盘价走势并解读" --save-report
+
 # 多轮对话（短期记忆），/reset 清空 / /exit 退出
 python agent.py --interactive
 ```
@@ -181,6 +193,8 @@ python agent.py --interactive
 茅台最近有什么新闻？
 茅台、五粮液、汾酒在白酒行业里的市值地位如何？
 宁德时代2021-2023年营收复合增长率是多少？
+画出贵州茅台近30个交易日的收盘价走势图（生成PNG）。
+解读我上传的这张K线图（配合 Web UI 附图或 --image 使用）。
 ```
 
 预期输出（手写版）：
@@ -210,6 +224,7 @@ uvicorn serve:app --host 0.0.0.0 --port 8000
 - 分析进行中：`💭 思考与调用过程` 抽屉默认展开，Thought/Action/Observation 卡片实时流入，每步卡片上标注耗时（如 `Step 3 · 4.2s`）
 - Final Answer 到达后：抽屉自动收起为一行摘要（`5 步 · 47.3 秒`），主界面只展示结论卡片，点击摘要可随时回看完整推理链
 - 运行中发送按钮变为红色 **⏹ 停止**，点击可随时打断（协作式：正在执行的那一步跑完即停，不产生后续步骤消耗）
+- 输入框下方支持 **🖼 附图**（可多选，单张≤10MB）：上传后随问题发送，Agent 自动调用视觉工具 `image_analysis` 理解图片（K线图/财务图表/截图均可）
 - 结论卡片提供"📄 导出研报"一键下载
 
 接口列表：
@@ -218,6 +233,7 @@ uvicorn serve:app --host 0.0.0.0 --port 8000
 - `POST /query/manual` — 手写版，流式 SSE 返回每步
 - `POST /query/fc` — Function Calling 版，流式 SSE 返回每步
 - `POST /cancel/{query_id}` — 打断一次正在进行的分析（query_id 来自 start 事件）
+- `POST /upload` — 上传图片（multipart），保存到 `uploads/` 并返回绝对路径，供 `images` 字段引用
 - `GET  /cache/stats` — 工具缓存运行统计（命中数 / 命中率 / 条目数）
 - `POST /cache/clear` — 手动清空工具缓存（调试改完工具逻辑立即生效用）
 
@@ -395,6 +411,14 @@ A：检查 `uvicorn` 是否正常启动，访问 `http://localhost:8000/health` 
 本项目用于学习 Agent 技术范式与工程实践，数据来源于 AkShare 公开接口及公开年报，不构成投资建议。
 
 ## 变更记录
+
+### v2.4（2026-10-28）
+
+- **多模态接入（工具化路线，双引擎零改动）**：新增 `image_analysis` 视觉工具——主推理模型保持纯文本 `qwen3.8-max`，图像分析交给独立 VL 客户端（DashScope `qwen3-vl-plus`，默认经 LiteLLM 网关 `vl-model` alias，可 `AGENT_VL_*` 环境变量直连）；本地图片自动 base64 编码（≤10MB），URL 直接透传。实测 CLI 手写版/FC 版均可看图分析（K线形态/金叉识别/交叉验证）
+- **图片入口**：CLI `--image`（可多次，路径注入问题文本，引擎零改动）；Web UI 新增 🖼 附图上传（`POST /upload`，multipart → `uploads/`，uuid 命名 + 后缀/大小校验，随问题发送）
+- **研报出图**：新增 `price_chart` 工具（matplotlib Agg 后端 + Windows 中文字体），收盘价 + MA20 走势 PNG 存 `reports/charts/`；研报新增「图表」章节自动嵌图（无图时章节编号保持原样）
+- 工具总数 8 → 10，缓存覆盖扩至 8 个网络型工具；`requirements.txt` 新增 matplotlib、python-multipart；实测坑：网关无 DB 模式只认 master key（带其他 key 报 `400 No connected db.`），serve/agent 进程须设 `AGENT_API_KEY=<gateway/.master_key>`
+- 进阶实验（未实装，见 AGENTS.md）：主模型换 VL 模型 + content 数组直接注入图片
 
 ### v2.3（2026-10-26）
 
